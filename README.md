@@ -2,6 +2,8 @@
 
 This library provides a unified interface for obtaining and refreshing credentials from various cloud providers and authentication systems. It is designed to facilitate secure access to cloud resources by exchanging identity tokens for temporary credentials.
 
+> For more background and insights about this project, see our [blog post](https://riptides.io/blog-post/introducing-tokenex-an-open-source-go-library-for-fetching-and-refreshing-cloud-credentials).
+
 ## Features
 
 - **AWS:** Exchanges ID tokens for AWS temporary session credentials using AWS's Workload Identity Federation

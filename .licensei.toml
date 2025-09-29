@@ -1,0 +1,13 @@
+approved = [
+  "mit",
+  "apache-2.0",
+  "bsd-3-clause",
+  "bsd-2-clause",
+  "mpl-2.0",
+  "unlicense",
+]
+
+ignored = [
+  "github.com/davecgh/go-spew",         # isc
+  "google.golang.org/protobuf",         # bsd-3
+]

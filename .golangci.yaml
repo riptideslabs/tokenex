@@ -1,0 +1,54 @@
+version: "2"
+linters:
+  default: all
+  disable:
+    - cyclop
+    - depguard
+    - exhaustive
+    - exhaustruct
+    - funlen
+    - gochecknoglobals
+    - godot
+    - godox
+    - gomoddirectives
+    - gosec
+    - inamedparam
+    - interfacebloat
+    - ireturn
+    - lll
+    - mnd
+    - nilnil
+    - nosprintfhostport
+    - tagliatelle
+    - varnamelen
+    - wrapcheck
+    - wsl
+  settings:
+    gocyclo:
+      min-complexity: 20
+    revive:
+      rules:
+        - name: var-naming
+          severity: warning
+          disabled: true
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - gofumpt
+    - goimports
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/riptideslabs,go.riptides.io)
+  exclusions:
+    generated: lax

@@ -1,0 +1,5 @@
+headerConfigs:
+  - copyrights:
+      - "Copyright (c) 2025 Riptides Labs, Inc."
+    licenseTypes:
+      - MIT

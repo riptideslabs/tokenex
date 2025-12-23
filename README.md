@@ -654,8 +654,8 @@ go func() {
 ```go
 import (
     "go.riptides.io/tokenex/pkg/credential"
-	"go.riptides.io/tokenex/pkg/token"
-	"go.riptides.io/tokenex/pkg/vault"
+    "go.riptides.io/tokenex/pkg/token"
+    "go.riptides.io/tokenex/pkg/vault"
 )
 
 

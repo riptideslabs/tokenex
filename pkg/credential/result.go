@@ -69,3 +69,9 @@ type Token struct {
 }
 
 func (*Token) isResultType() {}
+
+type VaultSecret struct {
+	Data map[string]any
+}
+
+func (*VaultSecret) isResultType() {}

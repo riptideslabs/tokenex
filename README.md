@@ -14,6 +14,7 @@ This library provides a unified interface for obtaining and refreshing credentia
 - **K8sSecret:** Watches a Kubernetes secret which contains a token and publishes updates when the secret changes
 - **OAuth2AC:** Obtains access tokens through OAuth2 authorization code flow and refreshes them before expiration
 - **OAuth2CC:** Obtains access tokens through OAuth2 client credentials flow and refreshes them before expiration
+- **Vault** Exchanges ID tokens for secrets from Vault using Vault's JWT authentication.
 
 ## Installation
 
@@ -638,6 +639,75 @@ go func() {
             
         case <-ctx.Done():
             log.Println("Context cancelled, shutting down OAuth2CC credentials handler")
+            return
+        }
+    }
+}()
+
+// In a real application, you would wait for all goroutines to complete before exiting
+// wg.Wait()
+```
+
+
+### Vault Credentials Provider
+
+```go
+import (
+    "go.riptides.io/tokenex/pkg/credential"
+	"go.riptides.io/tokenex/pkg/token"
+	"go.riptides.io/tokenex/pkg/vault"
+)
+
+
+// Create a logger
+logger := logr.New(logr.Discard())
+
+// Create the Vault credentials provider
+vaultProvider, err := vault.NewCredentialsProvider(ctx, logger, "http://localhost:8200")
+if err != nil {
+	return err
+}
+
+// Get credentials from Vault
+dbCredsChan, err := vaultProvider.GetCredentials(
+		ctx,
+		idTokenProvider,
+		vault.WithJWTAuthMethodPath("jwt"),
+		vault.WithJWTAuthRoleName("dbuser"),
+		vault.WithSecretFullPath("database/creds/pg-dyn-dbuser"),
+	)
+	if err != nil {
+		return err
+	}
+
+// Process dynamic credentials from the channel in a goroutine with proper context handling
+wg.Add(1)
+go func() {
+    defer wg.Done()
+    for {
+        select {
+        case creds, ok := <-dbCredsChan:
+            if !ok {
+                logger.Info("Database credentials channel closed")
+                return
+            }
+            if creds.Err != nil {
+                logger.Error(creds.Err, "Error receiving database credentials", errors.GetDetails(creds.Err))
+                return
+            }
+
+            dbSecret := creds.Credential.(*credential.VaultSecret)
+
+            // Database secrets typically contain username and password
+            if username, ok := dbSecret.Data["username"].(string); ok {
+                logger.Info("Database username", "value", username)
+            }
+            if password, ok := dbSecret.Data["password"].(string); ok {
+                logger.Info("Database password", "value", password)
+            }
+
+        case <-ctx.Done():
+            log.Println("Context cancelled, shutting down database credentials handler")
             return
         }
     }

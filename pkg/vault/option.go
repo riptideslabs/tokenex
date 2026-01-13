@@ -90,3 +90,11 @@ func WithPollInterval(d time.Duration) option.Option {
 		c.pollInterval = d
 	})
 }
+
+// WithRequestData sets additional request data to be sent when retrieving the secret from Vault.
+// This can be used to provide extra parameters required by certain secret engines.
+func WithRequestData(data map[string][]string) option.Option {
+	return withCredentialsOption(func(c *credentialsConfig) {
+		c.reqData = data
+	})
+}

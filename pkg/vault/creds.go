@@ -18,12 +18,16 @@ import (
 	"go.riptides.io/tokenex/pkg/util"
 )
 
+// ErrDataNotFound is returned when secret at a the specified secret path does not exist in Vault.
+var ErrDataNotFound = errors.New("data not found")
+
 // credentialsConfig holds the configuration for GetCredentials.
 type credentialsConfig struct {
 	jwtAuthMethodPath     string
 	jwtAuthRoleName       string
 	secretFullPath        string
 	pollInterval          time.Duration
+	reqData               map[string][]string
 	identityTokenProvider token.IdentityTokenProvider
 }
 
@@ -139,7 +143,7 @@ func (cp *credentialsProvider) retrieveCredentials(ctx context.Context, secretPa
 		return nil, errors.WrapIfWithDetails(err, "failed to read secret", "path", secretPath)
 	}
 	if secret == nil {
-		return nil, errors.NewWithDetails("no data found at secret path", "path", secretPath)
+		return nil, errors.WithDetails(ErrDataNotFound, "path", secretPath)
 	}
 
 	var expiresAt time.Time
@@ -206,7 +210,7 @@ func (cp *credentialsProvider) refreshCredentialsLoop(ctx context.Context, cfg *
 		}
 
 		// Retrieve the secret
-		creds, err := cp.retrieveCredentials(ctx, cfg.secretFullPath, cfg.pollInterval)
+		creds, err := cp.retrieveCredentials(ctx, cfg.secretFullPath, cfg.pollInterval, cfg.reqData)
 		if err != nil {
 			util.SendToChannel(credsChan, credential.Result{
 				Credential: nil,

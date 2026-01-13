@@ -279,17 +279,27 @@ func (cp *credentialsProvider) refreshCredentialsLoop(ctx context.Context, cfg *
 //   - ctx: The context for the operation
 //   - logger: Logger for logging credential operations
 //   - vaultAddr: The Vault server address (e.g., "https://vault.example.com:8200")
+//   - clientTLSConfig: Optional client TLS configuration for secure communication with Vault
 //
 // Returns:
 //   - A credential provider that can exchange ID tokens for Vault secrets
 //   - An error if the provider cannot be created
-func NewCredentialsProvider(ctx context.Context, logger logr.Logger, vaultAddr string) (*credentialsProvider, error) {
+func NewCredentialsProvider(ctx context.Context, logger logr.Logger, vaultAddr string, clientTLSConfig *api.TLSConfig) (*credentialsProvider, error) {
 	if vaultAddr == "" {
 		return nil, errors.New("vault address must be provided")
 	}
 
-	config := api.DefaultConfig()
-	config.Address = vaultAddr
+	config := &api.Config{
+		Address: vaultAddr,
+	}
+
+	// Configure TLS if provided
+	if clientTLSConfig != nil {
+		err := config.ConfigureTLS(clientTLSConfig)
+		if err != nil {
+			return nil, errors.WrapIf(err, "failed to configure TLS for Vault client")
+		}
+	}
 
 	client, err := api.NewClient(config)
 	if err != nil {

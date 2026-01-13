@@ -137,8 +137,8 @@ func (cp *credentialsProvider) authenticateWithJWT(ctx context.Context, idToken 
 // For dynamic secrets (with a lease), expiration is based on the lease duration.
 // For static secrets (no lease), expiration is based on the secret's TTL if available,
 // or falls back to the poll interval to ensure periodic refresh.
-func (cp *credentialsProvider) retrieveCredentials(ctx context.Context, secretPath string, pollInterval time.Duration) (*credentialData, error) {
-	secret, err := cp.client.Logical().ReadWithContext(ctx, secretPath)
+func (cp *credentialsProvider) retrieveCredentials(ctx context.Context, secretPath string, pollInterval time.Duration, reqData map[string][]string) (*credentialData, error) {
+	secret, err := cp.client.Logical().ReadWithDataWithContext(ctx, secretPath, reqData)
 	if err != nil {
 		return nil, errors.WrapIfWithDetails(err, "failed to read secret", "path", secretPath)
 	}

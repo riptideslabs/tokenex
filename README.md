@@ -663,7 +663,7 @@ import (
 logger := logr.New(logr.Discard())
 
 // Create the Vault credentials provider
-vaultProvider, err := vault.NewCredentialsProvider(ctx, logger, "http://localhost:8200")
+vaultProvider, err := vault.NewCredentialsProvider(ctx, logger, "http://localhost:8200", nil)
 if err != nil {
 	return err
 }

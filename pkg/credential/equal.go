@@ -3,6 +3,8 @@
 
 package credential
 
+import "reflect"
+
 func Equal(a, b Credential) bool {
 	switch a := a.(type) {
 	case *AWSCreds:
@@ -15,6 +17,10 @@ func Equal(a, b Credential) bool {
 		return ok && a.IsEqual(b)
 	case *Token:
 		b, ok := b.(*Token)
+
+		return ok && a.IsEqual(b)
+	case *VaultSecret:
+		b, ok := b.(*VaultSecret)
 
 		return ok && a.IsEqual(b)
 	default:
@@ -80,4 +86,8 @@ func (a *AWSCreds) IsEqual(b *AWSCreds) bool {
 	}
 
 	return true
+}
+
+func (a *VaultSecret) IsEqual(b *VaultSecret) bool {
+	return reflect.DeepEqual(a.Data, b.Data)
 }

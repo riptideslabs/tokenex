@@ -7,6 +7,9 @@ import (
 	"context"
 	"sync"
 
+	"emperror.dev/errors"
+	"github.com/golang-jwt/jwt/v5"
+
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
 )
@@ -34,8 +37,24 @@ func (s *StaticIdentityTokenProvider) GetToken(ctx context.Context, opts ...opti
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	jwtParser := jwt.NewParser()
+	t, _, err := jwtParser.ParseUnverified(s.token, jwt.MapClaims{})
+	if err != nil {
+		return credential.Token{}, errors.WrapIf(err, "failed to parse token")
+	}
+
+	if t.Claims == nil {
+		return credential.Token{}, errors.New("token has no claims")
+	}
+
+	exp, err := t.Claims.GetExpirationTime()
+	if err != nil {
+		return credential.Token{}, errors.WrapIf(err, "failed to get token expiration time")
+	}
+
 	return credential.Token{
-		Token: s.token,
+		Token:     t.Raw,
+		ExpiresAt: exp.Time,
 	}, nil
 }
 

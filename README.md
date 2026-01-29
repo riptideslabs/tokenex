@@ -2,7 +2,33 @@
 
 This library provides a unified interface for obtaining and refreshing credentials from various cloud providers and authentication systems. It is designed to facilitate secure access to cloud resources by exchanging identity tokens for temporary credentials.
 
-> For more background and insights about this project, see our [blog post](https://riptides.io/blog-post/introducing-tokenex-an-open-source-go-library-for-fetching-and-refreshing-cloud-credentials).
+## Related Blog Posts
+
+* **[Introducing tokenex: an open source Go library for fetching and refreshing credentials](https://blog.riptides.io/introducing-tokenex-an-open-source-go-library-for-fetching-and-refreshing-cloud-credentials)**
+* **[tokenex adds Vault & OpenBao support: Exchanging ID tokens (JWTs) for secrets without static credentials](https://blog.riptides.io/tokenex-adds-vault-openbao-support-exchanging-id-tokens-jwts-for-secrets-without-static-credentials)** 
+* **[Supplying short-lived OpenAI API keys to AI agents with Riptides](https://blog.riptides.io/ritptides-openai-apikeys/)** 
+
+---
+
+## Table of Contents
+* [Features](#features)
+* [Installation](#installation)
+* [Usage](#usage)
+    * [Common Setup](#common-setup)
+    * [AWS Provider](#aws-credentials-provider)
+    * [GCP Provider](#gcp-credentials-provider)
+    * [Azure Provider](#azure-credentials-provider)
+    * [OCI Provider](#oci-credentials-provider)
+    * [Generic Provider](#generic-credentials-provider)
+    * [K8sSecret Provider](#k8ssecret-credentials-provider)
+    * [OAuth2 Authorization Code](#oauth2-authorization-code-flow-provider)
+    * [OAuth2 Client Credentials](#oauth2-client-credentials-flow-provider)
+    * [Vault Provider](#vault-credentials-provider)
+* [Channel Behavior](#channel-behavior)
+* [License](#license)
+* [Contributing](#contributing)
+
+---
 
 ## Features
 

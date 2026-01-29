@@ -4,7 +4,7 @@ This library provides a unified interface for obtaining and refreshing credentia
 
 ## Related Blog Posts
 
-* **[Introducing tokenex: an open source Go library for fetching and refreshing credentials](https://riptides.io/blog-post/introducing-tokenex-an-open-source-go-library-for-fetching-and-refreshing-cloud-credentials)**
+* **[Introducing tokenex: an open source Go library for fetching and refreshing credentials](https://blog.riptides.io/introducing-tokenex-an-open-source-go-library-for-fetching-and-refreshing-cloud-credentials)**
 * **[tokenex adds Vault & OpenBao support: Exchanging ID tokens (JWTs) for secrets without static credentials](https://riptides.io/blog-post/tokenex-adds-vault-openbao-support-exchanging-id-tokens-jwts-for-secrets-without-static-credentials)** 
 * **[Supplying short-lived OpenAI API keys to AI agents with Riptides](https://blog.riptides.io/ritptides-openai-apikeys/)** 
 

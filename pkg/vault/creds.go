@@ -329,6 +329,7 @@ func (cp *credentialsProvider) startAzureAccessTokenProvider(ctx context.Context
 		clientID:     azureSecret.ClientID,
 		clientSecret: azureSecret.ClientSecret,
 		scopes:       scopes,
+		logger:       logr.FromContextOrDiscard(ctx).WithName("azure_access_token_provider"),
 	}
 
 	credsChan := make(chan credential.Result, 1)
@@ -428,7 +429,7 @@ func (cp *credentialsProvider) refreshCredentialsLoop(ctx context.Context, cfg *
 					Err:   nil,
 					Event: credential.UpdateEventType,
 				})
-				logger.V(2).Info("Published Vault secret", "secret_path", cfg.secretFullPath, "expiresAt", creds.ExpiresAt)
+				logger.V(2).Info("Published Vault secret", "expiresAt", creds.ExpiresAt)
 			}
 
 			if !creds.RefreshOn.IsZero() {
@@ -441,7 +442,7 @@ func (cp *credentialsProvider) refreshCredentialsLoop(ctx context.Context, cfg *
 				refreshTime = timeUntilExpiry - refreshBuffer
 			}
 
-			logger.V(1).Info("Scheduling credential refresh", "refreshIn", refreshTime, "refreshBuffer", refreshBuffer, "secret_path", cfg.secretFullPath)
+			logger.V(1).Info("Scheduling credential refresh", "refreshIn", refreshTime, "refreshBuffer", refreshBuffer)
 		case result, ok := <-workerChan:
 			if !ok {
 				// Worker channel closed, likely due to an error in the worker goroutine

@@ -56,7 +56,7 @@ func (r *gcpAccessTokenProvider) GetCredentials(ctx context.Context, credsChan c
 			return
 		}
 
-		// if the SA key was just created it's posisble that it may take a few seconds for GCP to propagate the key and allow it to be used for authentication.
+		// if the SA key was just created it's possible that it may take a few seconds for GCP to propagate the key and allow it to be used for authentication.
 		// This can result in transient errors when trying to exchange the key for an access token.
 		token, err := backoff.Retry(ctx, func() (*oauth2.Token, error) {
 			token, err := gcpCreds.TokenSource.Token()

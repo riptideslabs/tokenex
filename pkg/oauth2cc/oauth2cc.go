@@ -262,10 +262,7 @@ func (r *tokenRetriever) tokenRefresherLoop(ctx context.Context) {
 
 		// If credentials are already expired, this is an error
 		if timeUntilExpiry <= 0 {
-			util.SendToChannel(r.ch, credential.Result{
-				Credential: nil,
-				Err:        errors.NewWithDetails("received already expired token", "expiresAt", token.Expiry),
-			})
+			util.SendErrorToChannel(r.ch, errors.NewWithDetails("received already expired token", "expiresAt", token.Expiry))
 
 			return
 		}

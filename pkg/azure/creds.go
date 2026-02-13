@@ -86,10 +86,17 @@ func (cp *credentialsProvider) refreshCredentialsLoop(
 			Scopes:   []string{cfg.scope},
 		})
 		if err != nil {
-			util.SendToChannel(credsChan, credential.Result{
-				Credential: nil,
-				Err:        errors.WrapIf(err, "failed to retrieve credentials"),
-			})
+			util.SendErrorToChannel(credsChan, errors.WrapIf(err, "failed to retrieve credentials"))
+
+			return
+		}
+
+		// Calculate when to refresh
+		timeUntilExpiry := time.Until(token.ExpiresOn)
+
+		// If credentials are already expired, this is an error
+		if timeUntilExpiry <= 0 {
+			util.SendErrorToChannel(credsChan, errors.NewWithDetails("received already expired credentials", "expiresAt", token.ExpiresOn))
 
 			return
 		}
@@ -106,19 +113,6 @@ func (cp *credentialsProvider) refreshCredentialsLoop(
 			Event:      credential.UpdateEventType,
 		})
 		cp.logger.V(2).Info("Sent credentials", "expires", token.ExpiresOn)
-
-		// Calculate when to refresh
-		timeUntilExpiry := time.Until(token.ExpiresOn)
-
-		// If credentials are already expired, this is an error
-		if timeUntilExpiry <= 0 {
-			util.SendToChannel(credsChan, credential.Result{
-				Credential: nil,
-				Err:        errors.NewWithDetails("received already expired credentials", "expiresAt", token.ExpiresOn),
-			})
-
-			return
-		}
 
 		refreshBuffer := util.CalculateRefreshBuffer(timeUntilExpiry)
 		refreshTime := timeUntilExpiry - refreshBuffer

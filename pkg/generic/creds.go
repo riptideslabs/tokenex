@@ -159,10 +159,7 @@ loop:
 
 			token, err = tokenProvider.GetToken(ctx, opts...)
 			if err != nil {
-				util.SendToChannel(credsChan, credential.Result{
-					Credential: nil,
-					Err:        errors.WrapIf(err, "could not create token"),
-				})
+				util.SendErrorToChannel(credsChan, errors.WrapIf(err, "could not create token"))
 
 				return
 			}
@@ -190,10 +187,7 @@ loop:
 
 			// If credentials are already expired, this is an error
 			if timeUntilExpiry <= 0 {
-				util.SendToChannel(credsChan, credential.Result{
-					Credential: nil,
-					Err:        errors.NewWithDetails("received already expired credentials", "expiresAt", token.ExpiresAt.Format(time.DateTime)),
-				})
+				util.SendErrorToChannel(credsChan, errors.NewWithDetails("received already expired credentials", "expiresAt", token.ExpiresAt.Format(time.DateTime)))
 
 				return
 			}

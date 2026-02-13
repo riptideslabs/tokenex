@@ -95,30 +95,21 @@ func (cp *credentialsProvider) refreshCredentialsLoop(ctx context.Context, cfg *
 	for {
 		idToken, err := cfg.identityTokenProvider.GetToken(ctx)
 		if err != nil {
-			util.SendToChannel(credsChan, credential.Result{
-				Credential: nil,
-				Err:        errors.WrapIf(err, "failed to get identity token"),
-			})
+			util.SendErrorToChannel(credsChan, errors.WrapIf(err, "failed to get identity token"))
 
 			return
 		}
 
 		authToken, err := exchangeToken(ctx, tokenEndpoint, cfg.clientID, cfg.clientSecret, idToken.Token, publicKey)
 		if err != nil {
-			util.SendToChannel(credsChan, credential.Result{
-				Credential: nil,
-				Err:        errors.WrapIf(err, "token exchange failed"),
-			})
+			util.SendErrorToChannel(credsChan, errors.WrapIf(err, "token exchange failed"))
 
 			return
 		}
 
 		expTime, err := getTokenExpiration(authToken)
 		if err != nil {
-			util.SendToChannel(credsChan, credential.Result{
-				Credential: nil,
-				Err:        errors.WrapIf(err, "failed to get expiration time of the received UPST"),
-			})
+			util.SendErrorToChannel(credsChan, errors.WrapIf(err, "failed to get expiration time of the received UPST"))
 
 			return
 		}
@@ -134,10 +125,7 @@ func (cp *credentialsProvider) refreshCredentialsLoop(ctx context.Context, cfg *
 
 		// If credentials are already expired, this is an error
 		if timeUntilExpiry <= 0 {
-			util.SendToChannel(credsChan, credential.Result{
-				Credential: nil,
-				Err:        errors.NewWithDetails("received already expired credentials", "expiresAt", ociCredential.ExpiresAt),
-			})
+			util.SendErrorToChannel(credsChan, errors.NewWithDetails("received already expired credentials", "expiresAt", ociCredential.ExpiresAt))
 
 			return
 		}

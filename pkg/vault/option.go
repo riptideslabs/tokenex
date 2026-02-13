@@ -98,3 +98,61 @@ func WithRequestData(data map[string][]string) option.Option {
 		c.reqData = data
 	})
 }
+
+// WithGCPServiceAccountKeyExchange configures the credential exchange to handle GCP service account keys returned by Vault's GCP secrets engine.
+// This option is only applicable if the Vault secret being retrieved contains GCP service account key data.
+// When enabled, if the Vault secret contains GCP service account key data, the credential exchange will use that key data to obtain an access token from GCP and return the access token instead of the raw service account key data.
+func WithGCPServiceAccountKeyExchange() option.Option {
+	return withCredentialsOption(func(c *credentialsConfig) {
+		if c.gcp == nil {
+			c.gcp = &gcpCredentialConfig{}
+		}
+		c.gcp.exchangeSAKeyForAccessToken = true
+	})
+}
+
+// WithGCPServiceAccountKeyExchangeScopes sets the scopes to be used when exchanging a GCP service account key for an access token from GCP.
+// This option is only applicable if WithGCPServiceAccountKeyExchange is enabled.
+// If not set, the default scope used for exchange is "https://www.googleapis.com/auth/cloud-platform".
+func WithGCPServiceAccountKeyExchangeScopes(scopes []string) option.Option {
+	return withCredentialsOption(func(c *credentialsConfig) {
+		if c.gcp == nil {
+			c.gcp = &gcpCredentialConfig{}
+		}
+		c.gcp.accessTokenScopes = scopes
+	})
+}
+
+// WithAzureClientSecretExchange configures the credential exchange to handle Azure credentials returned by Vault's Azure secrets engine.
+// This option is only applicable if the Vault secret being retrieved contains Azure credential data (client ID, client secret).
+func WithAzureClientSecretExchange() option.Option {
+	return withCredentialsOption(func(c *credentialsConfig) {
+		if c.azure == nil {
+			c.azure = &azureCredentialConfig{}
+		}
+		c.azure.exchangeForAccessToken = true
+	})
+}
+
+// WithAzureClientSecretExchangeScopes sets the scopes to be used when exchanging Azure credentials for an access token from Azure.
+// This option is only applicable if WithAzureClientSecretExchange is enabled.
+// If not set, the default scope used for exchange is "https://management.azure.com/.default".
+func WithAzureClientSecretExchangeScopes(scopes []string) option.Option {
+	return withCredentialsOption(func(c *credentialsConfig) {
+		if c.azure == nil {
+			c.azure = &azureCredentialConfig{}
+		}
+		c.azure.accessTokenScopes = scopes
+	})
+}
+
+// WithAzureTenantID sets the tenant ID to be used when exchanging Azure credentials for an access token from Azure.
+// This option is required if WithAzureClientSecretExchange is enabled.
+func WithAzureTenantID(tenantID string) option.Option {
+	return withCredentialsOption(func(c *credentialsConfig) {
+		if c.azure == nil {
+			c.azure = &azureCredentialConfig{}
+		}
+		c.azure.tenantID = tenantID
+	})
+}

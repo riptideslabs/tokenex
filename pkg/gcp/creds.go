@@ -90,10 +90,7 @@ func (cp *credentialsProvider) refreshCredentialsLoop(
 	for {
 		accessToken, err := genAccessTokenFunc()
 		if err != nil {
-			util.SendToChannel(credsChan, credential.Result{
-				Credential: nil,
-				Err:        errors.WrapIf(err, "failed to get access token"),
-			})
+			util.SendErrorToChannel(credsChan, errors.WrapIf(err, "failed to get access token"))
 
 			return
 		}
@@ -113,10 +110,7 @@ func (cp *credentialsProvider) refreshCredentialsLoop(
 
 		// If credentials are already expired, this is an error
 		if timeUntilExpiry <= 0 {
-			util.SendToChannel(credsChan, credential.Result{
-				Credential: nil,
-				Err:        errors.NewWithDetails("received already expired credentials", "expiresAt", accessToken.Expiry),
-			})
+			util.SendErrorToChannel(credsChan, errors.NewWithDetails("received already expired credentials", "expiresAt", accessToken.Expiry))
 
 			return
 		}

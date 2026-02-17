@@ -78,10 +78,7 @@ func (cp *credentialsProvider) refreshCredentialsLoop(ctx context.Context, provi
 		// Get credentials
 		awsCreds, err := provider.Retrieve(ctx)
 		if err != nil {
-			util.SendToChannel(credsChan, credential.Result{
-				Credential: nil,
-				Err:        errors.WrapIf(err, "failed to retrieve credentials"),
-			})
+			util.SendErrorToChannel(credsChan, errors.WrapIf(err, "failed to retrieve credentials"))
 
 			return
 		}
@@ -111,10 +108,7 @@ func (cp *credentialsProvider) refreshCredentialsLoop(ctx context.Context, provi
 
 		// If credentials are already expired, this is an error
 		if timeUntilExpiry <= 0 {
-			util.SendToChannel(credsChan, credential.Result{
-				Credential: nil,
-				Err:        errors.NewWithDetails("received already expired credentials", "expiresAt", awsCreds.Expires),
-			})
+			util.SendErrorToChannel(credsChan, errors.NewWithDetails("received already expired credentials", "expiresAt", awsCreds.Expires))
 
 			return
 		}

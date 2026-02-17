@@ -44,3 +44,11 @@ func SendToChannel(credsChan chan credential.Result, result credential.Result) {
 		credsChan <- result
 	}
 }
+
+// SendErrorToChannel is a helper function to send an error result to the credentials channel.
+func SendErrorToChannel(credsChan chan credential.Result, err error) {
+	SendToChannel(credsChan, credential.Result{
+		Credential: nil,
+		Err:        err,
+	})
+}

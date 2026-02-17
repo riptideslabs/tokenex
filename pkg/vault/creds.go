@@ -9,6 +9,7 @@ import (
 
 	"emperror.dev/errors"
 	"github.com/go-logr/logr"
+	"github.com/go-viper/mapstructure/v2"
 	jwtauth "github.com/openbao/openbao/api/auth/jwt/v2"
 	"github.com/openbao/openbao/api/v2"
 
@@ -21,6 +22,72 @@ import (
 // ErrDataNotFound is returned when secret at a the specified secret path does not exist in Vault.
 var ErrDataNotFound = errors.New("data not found")
 
+// gcpCredentialConfig holds configuration specific to GCP credentials returned by the Google Cloud secrets engine in Vault.
+type gcpCredentialConfig struct {
+	// Exchange service account key material for a short-lived access token
+	// This option is used only when the Google Cloud secrets engine is configured to return service account keys.
+	exchangeSAKeyForAccessToken bool
+
+	// accessTokenScopes specifies the scopes to request when exchanging a service account key for an access token.
+	// This option is used only when exchangeSAKeyForAccessToken is true.
+	// If not set, it defaults to ["https://www.googleapis.com/auth/cloud-platform"].
+	accessTokenScopes []string
+}
+
+func (g *gcpCredentialConfig) ExchangeSAKeyForAccessToken() bool {
+	if g != nil {
+		return g.exchangeSAKeyForAccessToken
+	}
+
+	return false
+}
+
+func (g *gcpCredentialConfig) AccessTokenScopes() []string {
+	if g != nil {
+		return g.accessTokenScopes
+	}
+
+	return nil
+}
+
+// azureCredentialConfig holds configuration specific to Azure credentials returned by the Azure secrets engine in Vault.
+type azureCredentialConfig struct {
+	// exchangeForAccessToken indicates whether to exchange the client ID and client secret returned by Vault for an Azure access token.
+	exchangeForAccessToken bool
+
+	// tenantID is the Azure tenant ID to use when exchanging Vault credentials for an Azure access token. This is required when exchangeForAccessToken is true.
+	tenantID string
+
+	// accessTokenScopes specifies the scopes to request when exchanging Azure credentials for an access token.
+	// This option is used only when exchangeForAccessToken is true.
+	// If not set, it defaults to ["https://management.azure.com/.default"].
+	accessTokenScopes []string
+}
+
+func (a *azureCredentialConfig) ExchangeForAccessToken() bool {
+	if a != nil {
+		return a.exchangeForAccessToken
+	}
+
+	return false
+}
+
+func (a *azureCredentialConfig) TenantID() string {
+	if a != nil {
+		return a.tenantID
+	}
+
+	return ""
+}
+
+func (a *azureCredentialConfig) AccessTokenScopes() []string {
+	if a != nil {
+		return a.accessTokenScopes
+	}
+
+	return nil
+}
+
 // credentialsConfig holds the configuration for GetCredentials.
 type credentialsConfig struct {
 	jwtAuthMethodPath     string
@@ -29,6 +96,9 @@ type credentialsConfig struct {
 	pollInterval          time.Duration
 	reqData               map[string][]string
 	identityTokenProvider token.IdentityTokenProvider
+
+	gcp   *gcpCredentialConfig
+	azure *azureCredentialConfig
 }
 
 // credentialData holds the secret data and expiration information returned from Vault.
@@ -98,6 +168,12 @@ func validateConfig(cfg *credentialsConfig) error {
 		return errors.New("identity token provider must be specified")
 	}
 
+	if cfg.azure != nil {
+		if cfg.azure.exchangeForAccessToken && cfg.azure.tenantID == "" {
+			return errors.New("Azure tenant ID must be specified when exchange for access token is enabled")
+		}
+	}
+
 	return nil
 }
 
@@ -133,17 +209,38 @@ func (cp *credentialsProvider) authenticateWithJWT(ctx context.Context, idToken 
 	return nil
 }
 
+func (cp *credentialsProvider) authenticate(ctx context.Context, cfg *credentialsConfig) error {
+	// Get ID token
+	idToken, err := cfg.identityTokenProvider.GetToken(ctx)
+	if err != nil {
+		return errors.WrapIf(err, "failed to get ID token")
+	}
+
+	// Authenticate with Vault using JWT
+	err = cp.authenticateWithJWT(ctx, idToken, cfg.jwtAuthMethodPath, cfg.jwtAuthRoleName)
+	if err != nil {
+		return errors.WrapIfWithDetails(err, "failed to authenticate with Vault", "auth_path", cfg.jwtAuthMethodPath, "role", cfg.jwtAuthRoleName)
+	}
+
+	return nil
+}
+
 // retrieveCredentials retrieves a secret from Vault at the specified path.
 // For dynamic secrets (with a lease), expiration is based on the lease duration.
 // For static secrets (no lease), expiration is based on the secret's TTL if available,
 // or falls back to the poll interval to ensure periodic refresh.
-func (cp *credentialsProvider) retrieveCredentials(ctx context.Context, secretPath string, pollInterval time.Duration, reqData map[string][]string) (*credentialData, error) {
-	secret, err := cp.client.Logical().ReadWithDataWithContext(ctx, secretPath, reqData)
+func (cp *credentialsProvider) retrieveCredentials(ctx context.Context, cfg *credentialsConfig) (*credentialData, error) {
+	err := cp.authenticate(ctx, cfg)
 	if err != nil {
-		return nil, errors.WrapIfWithDetails(err, "failed to read secret", "path", secretPath)
+		return nil, errors.WrapIf(err, "failed to authenticate with Vault")
+	}
+
+	secret, err := cp.client.Logical().ReadWithDataWithContext(ctx, cfg.secretFullPath, cfg.reqData)
+	if err != nil {
+		return nil, errors.WrapIfWithDetails(err, "failed to read secret", "path", cfg.secretFullPath)
 	}
 	if secret == nil {
-		return nil, errors.WithDetails(ErrDataNotFound, "path", secretPath)
+		return nil, errors.WithDetails(ErrDataNotFound, "path", cfg.secretFullPath)
 	}
 
 	var expiresAt time.Time
@@ -164,7 +261,7 @@ func (cp *credentialsProvider) retrieveCredentials(ctx context.Context, secretPa
 	// If no TTL is present, fall back to using the poll interval to ensure the secret is periodically refreshed.
 	ttl, err := secret.TokenTTL()
 	if err != nil {
-		return nil, errors.WrapIfWithDetails(err, "failed to get secret TTL", "path", secretPath)
+		return nil, errors.WrapIfWithDetails(err, "failed to get secret TTL", "path", cfg.secretFullPath)
 	}
 
 	// Add a small leeway to allow Vault to rotate static credentials before we attempt to refresh.
@@ -172,7 +269,7 @@ func (cp *credentialsProvider) retrieveCredentials(ctx context.Context, secretPa
 	if ttl == 0 {
 		// No TTL means the secret does not expire and Vault will not rotate it automatically.
 		// In this case, set the expiration to the poll interval to ensure we periodically check for updates to the secret in Vault.
-		ttl = pollInterval
+		ttl = cfg.pollInterval
 		staticCredsRotationLeeway = 0 // No leeway needed since Vault won't rotate this credential.
 	}
 	expiresAt = time.Now().Add(ttl)
@@ -184,89 +281,183 @@ func (cp *credentialsProvider) retrieveCredentials(ctx context.Context, secretPa
 	}, nil
 }
 
+// startGcpAccessTokenProvider starts a worker goroutine that exchanges a GCP service account key for an access token and refreshes it as needed until the context is canceled.
+func (cp *credentialsProvider) startGcpAccessTokenProvider(ctx context.Context, secretData map[string]any, scopes []string) (<-chan credential.Result, error) {
+	var serviceAccountKeySecret gcpServiceAccountKeySecret
+	if err := mapstructure.Decode(secretData, &serviceAccountKeySecret); err != nil {
+		return nil, errors.WrapIf(err, "failed to decode Vault secret data into GCP service account key credentials structure")
+	}
+
+	keyJSON, err := serviceAccountKeySecret.ServiceAccountKeyJSON()
+	if err != nil {
+		return nil, errors.WrapIf(err, "failed to get service account key JSON")
+	}
+
+	if len(scopes) == 0 {
+		scopes = []string{"https://www.googleapis.com/auth/cloud-platform"}
+	}
+
+	provider := gcpAccessTokenProvider{
+		serviceAccountKeyJSON: keyJSON,
+		scopes:                scopes,
+		logger:                logr.FromContextOrDiscard(ctx).WithName("gcp_access_token_provider"),
+	}
+
+	credsChan := make(chan credential.Result, 1)
+	go func() {
+		defer close(credsChan)
+		provider.GetCredentials(ctx, credsChan)
+	}()
+
+	return credsChan, nil
+}
+
+// startAzureAccessTokenProvider starts a worker goroutine that exchanges Azure credentials for an access token and refreshes it as needed until the context is canceled.
+func (cp *credentialsProvider) startAzureAccessTokenProvider(ctx context.Context, secretData map[string]any, tenantID string, scopes []string) (<-chan credential.Result, error) {
+	var azureSecret vaultAzureSecret
+
+	if err := mapstructure.Decode(secretData, &azureSecret); err != nil {
+		return nil, errors.WrapIf(err, "failed to decode Vault secret data into Azure credentials structure")
+	}
+
+	if len(scopes) == 0 {
+		scopes = []string{"https://management.azure.com/.default"}
+	}
+
+	provider := azureAccessTokenProvider{
+		tenantID:     tenantID,
+		clientID:     azureSecret.ClientID,
+		clientSecret: azureSecret.ClientSecret,
+		scopes:       scopes,
+		logger:       logr.FromContextOrDiscard(ctx).WithName("azure_access_token_provider"),
+	}
+
+	credsChan := make(chan credential.Result, 1)
+	go func() {
+		defer close(credsChan)
+		provider.GetCredentials(ctx, credsChan)
+	}()
+
+	return credsChan, nil
+}
+
+// shouldStartWorker determines whether a worker goroutine should be started to handle credential exchange and refresh based on the configuration.
+func shouldStartWorker(cfg *credentialsConfig) bool {
+	return cfg.gcp.ExchangeSAKeyForAccessToken() || cfg.azure.ExchangeForAccessToken()
+}
+
+func (cp *credentialsProvider) startWorker(ctx context.Context, cfg *credentialsConfig, credsData map[string]any) (<-chan credential.Result, context.CancelFunc, error) {
+	if cfg.gcp.ExchangeSAKeyForAccessToken() {
+		// get access token using the service account key data in the Vault secret
+		// and send the access token through the channel instead of the raw service account key data
+		ctx, cancel := context.WithCancel(ctx)
+		credsChan, err := cp.startGcpAccessTokenProvider(ctx, credsData, cfg.gcp.accessTokenScopes)
+		if err != nil {
+			return nil, cancel, errors.WrapIf(err, "failed to start GCP access token provider")
+		}
+
+		return credsChan, cancel, nil
+	}
+
+	if cfg.azure.ExchangeForAccessToken() {
+		// get access token using the client ID and client secret data in the Vault secret
+		ctx, cancel := context.WithCancel(ctx)
+		credsChan, err := cp.startAzureAccessTokenProvider(ctx, credsData, cfg.azure.TenantID(), cfg.azure.AccessTokenScopes())
+		if err != nil {
+			return nil, cancel, errors.WrapIf(err, "failed to start Azure access token provider")
+		}
+
+		return credsChan, cancel, nil
+	}
+
+	return nil, nil, nil
+}
+
 // refreshCredentialsLoop handles the credential retrieval and refresh loop.
 func (cp *credentialsProvider) refreshCredentialsLoop(ctx context.Context, cfg *credentialsConfig, credsChan chan credential.Result) {
+	var cancelWorker context.CancelFunc
+	var workerChan <-chan credential.Result
+
+	var refreshBuffer, refreshTime time.Duration
+
+	logger := cp.logger.WithValues("secret_path", cfg.secretFullPath)
+
 	for {
-		// Get ID token
-		idToken, err := cfg.identityTokenProvider.GetToken(ctx)
-		if err != nil {
-			util.SendToChannel(credsChan, credential.Result{
-				Credential: nil,
-				Err:        errors.WrapIf(err, "failed to get ID token"),
-			})
-
-			return
-		}
-
-		// Authenticate with Vault using JWT
-		err = cp.authenticateWithJWT(ctx, idToken, cfg.jwtAuthMethodPath, cfg.jwtAuthRoleName)
-		if err != nil {
-			util.SendToChannel(credsChan, credential.Result{
-				Credential: nil,
-				Err:        errors.WrapIf(err, "failed to authenticate with Vault"),
-			})
-
-			return
-		}
-
-		// Retrieve the secret
-		creds, err := cp.retrieveCredentials(ctx, cfg.secretFullPath, cfg.pollInterval, cfg.reqData)
-		if err != nil {
-			util.SendToChannel(credsChan, credential.Result{
-				Credential: nil,
-				Err:        errors.WrapIf(err, "failed to retrieve secret"),
-			})
-
-			return
-		}
-
-		// Calculate when to refresh
-		timeUntilExpiry := time.Until(creds.ExpiresAt)
-
-		// If credentials are already expired, this is an error
-		if timeUntilExpiry <= 0 {
-			util.SendToChannel(credsChan, credential.Result{
-				Credential: nil,
-				Err:        errors.NewWithDetails("received already expired credentials", "secret_path", cfg.secretFullPath, "expiresAt", creds.ExpiresAt),
-			})
-
-			return
-		}
-
-		// Send credentials
-		util.SendToChannel(credsChan, credential.Result{
-			Credential: &credential.VaultSecret{
-				Data: creds.Data,
-			},
-			Err:   nil,
-			Event: credential.UpdateEventType,
-		})
-
-		cp.logger.V(2).Info("Published Vault secret", "secret_path", cfg.secretFullPath, "expiresAt", creds.ExpiresAt)
-
-		// Apply refresh buffer
-		var refreshBuffer, refreshTime time.Duration
-
-		if !creds.RefreshOn.IsZero() {
-			// if refresh time is specified in the received credentials, use that
-			cp.logger.V(2).Info("Using RefreshOn time from credentials", "refreshOn", creds.RefreshOn)
-
-			refreshTime = time.Until(creds.RefreshOn)
-		} else {
-			refreshBuffer = util.CalculateRefreshBuffer(timeUntilExpiry)
-			refreshTime = timeUntilExpiry - refreshBuffer
-		}
-
-		cp.logger.V(1).Info("Scheduling credential refresh", "refreshIn", refreshTime, "refreshBuffer", refreshBuffer, "secret_path", cfg.secretFullPath)
-
 		select {
 		case <-ctx.Done():
-			cp.logger.V(1).Info("Context cancelled, stopping credential refresh")
+			logger.V(1).Info("Context cancelled, stopping credential refresh")
 
 			return
 		case <-time.After(refreshTime):
-			// Continue to next iteration to refresh
-			cp.logger.V(2).Info("Refreshing credentials", "secret_path", cfg.secretFullPath)
+			logger.V(2).Info("Refreshing credentials")
+			if cancelWorker != nil {
+				cancelWorker() // cancel any existing worker goroutine before starting a new one to refresh credentials
+				cancelWorker = nil
+			}
+
+			// Retrieve the secret
+			creds, err := cp.retrieveCredentials(ctx, cfg)
+			if err != nil {
+				util.SendErrorToChannel(credsChan, errors.WrapIfWithDetails(err, "failed to retrieve secret", "secret_path", cfg.secretFullPath))
+
+				return
+			}
+
+			// Calculate when to refresh
+			timeUntilExpiry := time.Until(creds.ExpiresAt)
+
+			// If credentials are already expired, this is an error
+			if timeUntilExpiry <= 0 {
+				util.SendErrorToChannel(credsChan, errors.NewWithDetails("received already expired credentials", "secret_path", cfg.secretFullPath, "expiresAt", creds.ExpiresAt))
+
+				return
+			}
+
+			if shouldStartWorker(cfg) {
+				workerChan, cancelWorker, err = cp.startWorker(logr.NewContext(ctx, logger), cfg, creds.Data)
+				if err != nil {
+					util.SendErrorToChannel(credsChan, errors.WrapIf(err, "failed to start credential worker"))
+
+					return
+				}
+			} else {
+				// Send credentials
+				util.SendToChannel(credsChan, credential.Result{
+					Credential: &credential.VaultSecret{
+						Data: creds.Data,
+					},
+					Err:   nil,
+					Event: credential.UpdateEventType,
+				})
+				logger.V(2).Info("Published Vault secret", "expiresAt", creds.ExpiresAt)
+			}
+
+			if !creds.RefreshOn.IsZero() {
+				// if refresh time is specified in the received credentials, use that
+				logger.V(2).Info("Using RefreshOn time from credentials", "refreshOn", creds.RefreshOn)
+
+				refreshTime = time.Until(creds.RefreshOn)
+			} else {
+				refreshBuffer = util.CalculateRefreshBuffer(timeUntilExpiry)
+				refreshTime = timeUntilExpiry - refreshBuffer
+			}
+
+			logger.V(1).Info("Scheduling credential refresh", "refreshIn", refreshTime, "refreshBuffer", refreshBuffer)
+		case result, ok := <-workerChan:
+			if !ok {
+				// Worker channel closed, likely due to an error in the worker goroutine
+				util.SendErrorToChannel(credsChan, errors.New("credential worker stopped unexpectedly"))
+
+				return
+			}
+
+			if result.Err != nil {
+				util.SendErrorToChannel(credsChan, result.Err)
+
+				return
+			}
+
+			util.SendToChannel(credsChan, result)
 		}
 	}
 }

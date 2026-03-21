@@ -270,10 +270,6 @@ func (cp *credentialsProvider) Start(ctx context.Context) (<-chan StatusEvent, e
 }
 
 func (cp *credentialsProvider) Authorize(ctx context.Context, authState, code string) (*oauth2.Token, error) {
-	if cp.syncGate.IsOpen() {
-		return nil, errors.WithStack(ErrAlreadyAuthorized)
-	}
-
 	token, err := cp.exchangeToken(ctx, authState, code)
 	if err != nil {
 		return nil, err
@@ -289,6 +285,10 @@ func (cp *credentialsProvider) Authorize(ctx context.Context, authState, code st
 
 	if err := cp.storeTokenAndAuthorize(ctx, token); err != nil {
 		return nil, err
+	}
+
+	if cp.syncGate.IsOpen() {
+		cp.signalRefresh()
 	}
 
 	return token, nil
@@ -547,24 +547,30 @@ func (cp *credentialsProvider) tokenRefresherLoop(ctx context.Context) {
 
 		select {
 		case <-cp.refreshCh:
-			cp.logger.Info("client credentials changed: reset init condition and wait for re-authorization")
-
 			cp.mu.RLock()
 			serr := cp.secretError
 			cp.mu.RUnlock()
 
-			err := errors.WithStack(ErrAuthorizationNeeded)
 			if serr != nil {
-				err = errors.Wrap(err, serr.Error())
+				cp.logger.Info("client credentials changed: reset init condition and wait for re-authorization")
+
+				err := errors.Wrap(errors.WithStack(ErrAuthorizationNeeded), serr.Error())
+				cp.publishCredential(Credential{
+					Event: credential.RemoveEventType,
+					Err:   err,
+				})
+
+				cp.setUnauthorizedStatus(err)
+
+				continue
 			}
+
+			cp.logger.Info("re-authorization: replacing token")
 			cp.publishCredential(Credential{
 				Event: credential.RemoveEventType,
-				Err:   err,
+				Err:   errors.WithStack(ErrAuthorizationNeeded),
 			})
-
-			cp.setUnauthorizedStatus(err)
-
-			continue
+			refreshTime = 0
 		case <-ctx.Done():
 			return
 		case <-time.After(refreshTime):

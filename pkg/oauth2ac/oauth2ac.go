@@ -159,6 +159,7 @@ type credentialsProvider struct {
 	authStates               map[string]authState
 	authStateTTL             time.Duration
 	authStateCleanupInterval time.Duration
+	reauthorizeIfAuthorized  bool
 
 	syncGate *util.SyncGate
 
@@ -214,6 +215,7 @@ func NewCredentialsProvider(id string, cache cache.Cache, tokenStore TokenStorag
 
 		authStateTTL:             time.Minute * 5,
 		authStateCleanupInterval: time.Second * 5,
+		reauthorizeIfAuthorized:  true,
 	}
 
 	for _, o := range opts {
@@ -283,6 +285,10 @@ func (cp *credentialsProvider) Start(ctx context.Context) (<-chan StatusEvent, e
 }
 
 func (cp *credentialsProvider) Authorize(ctx context.Context, authState, code string) (*oauth2.Token, error) {
+	if !cp.reauthorizeIfAuthorized && cp.syncGate.IsOpen() {
+		return nil, errors.WithStack(ErrAlreadyAuthorized)
+	}
+
 	token, err := cp.exchangeToken(ctx, authState, code)
 	if err != nil {
 		return nil, err

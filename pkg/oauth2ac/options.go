@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Riptides Labs, Inc.
+// Copyright (c) 2026 Riptides Labs, Inc.
 // SPDX-License-Identifier: MIT
 
 package oauth2ac
@@ -35,6 +35,15 @@ func isCredentialsProviderOption(opt any) (CredentialsProviderOption, bool) {
 	}
 
 	return nil, false
+}
+
+// WithReauthorizeIfAuthorized controls whether completing a new auth flow signals a token
+// refresh when the provider is already authorized (i.e. has a valid token).
+// Defaults to true.
+func WithReauthorizeIfAuthorized(v bool) option.Option {
+	return withCredentialsProviderOption(func(cp *credentialsProvider) {
+		cp.reauthorizeIfAuthorized = v
+	})
 }
 
 // WithAuthStateTTL sets how long an auth state is kept before being considered expired.

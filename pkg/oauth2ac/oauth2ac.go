@@ -248,9 +248,7 @@ func (cp *credentialsProvider) Start(ctx context.Context) (<-chan StatusEvent, e
 		return nil, errors.WithStack(ErrAlreadyRunning)
 	}
 
-	if err := cp.authorizeIfTokenExists(ctx); err != nil {
-		return nil, err
-	}
+	cp.authorizeIfTokenExists(ctx)
 
 	handlerStopFunc, err := cp.startInformer(ctx)
 	if err != nil {
@@ -260,7 +258,7 @@ func (cp *credentialsProvider) Start(ctx context.Context) (<-chan StatusEvent, e
 	cp.running.Store(true)
 
 	// periodic cleanup of expired states
-	go util.RunFuncAtInterval(ctx, cp.authStateCleanupInterval, func(_ context.Context) error {
+	go util.RunFuncAtInterval(ctx, cp.authStateCleanupInterval, func(_ context.Context) error { //nolint:unparam
 		cp.cleanupExpiredStates()
 
 		return nil
@@ -428,7 +426,7 @@ func (cp *credentialsProvider) storeTokenAndAuthorize(ctx context.Context, token
 	return nil
 }
 
-func (cp *credentialsProvider) authorizeIfTokenExists(ctx context.Context) error {
+func (cp *credentialsProvider) authorizeIfTokenExists(ctx context.Context) {
 	token, err := cp.tokenStore.Get(ctx, cp.id)
 	if err == nil && token.RefreshToken != "" {
 		cp.logger.Info("token exists")
@@ -437,8 +435,6 @@ func (cp *credentialsProvider) authorizeIfTokenExists(ctx context.Context) error
 	} else {
 		cp.setUnauthorizedStatus(errors.WithStack(ErrAuthorizationNeeded))
 	}
-
-	return nil
 }
 
 // validateConfig validates the configuration and returns an error if any required field is missing.

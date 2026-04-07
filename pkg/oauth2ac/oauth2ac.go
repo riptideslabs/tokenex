@@ -155,8 +155,10 @@ type credentialsProvider struct {
 	clientSecret string
 	secretError  error
 
-	statesMu   sync.RWMutex
-	authStates map[string]authState
+	statesMu                 sync.RWMutex
+	authStates               map[string]authState
+	authStateTTL             time.Duration
+	authStateCleanupInterval time.Duration
 
 	syncGate *util.SyncGate
 
@@ -190,12 +192,12 @@ type TokenStorage interface {
 //   - logger: Logger for logging credential operations
 //
 // Returns a credential provider and an error if creation fails
-func NewCredentialsProvider(id string, cache cache.Cache, tokenStore TokenStorage, cfg *CredentialsConfig, logger logr.Logger) (*credentialsProvider, error) {
+func NewCredentialsProvider(id string, cache cache.Cache, tokenStore TokenStorage, cfg *CredentialsConfig, logger logr.Logger, opts ...option.Option) (*credentialsProvider, error) {
 	if err := validateConfig(cfg); err != nil {
 		return nil, err
 	}
 
-	return &credentialsProvider{
+	cp := &credentialsProvider{
 		id:         id,
 		cache:      cache,
 		tokenStore: tokenStore,
@@ -209,7 +211,18 @@ func NewCredentialsProvider(id string, cache cache.Cache, tokenStore TokenStorag
 		authStates: map[string]authState{},
 		syncGate:   util.NewSyncGate(),
 		pipe:       eventbus.NewPipe[Credential](),
-	}, nil
+
+		authStateTTL:             time.Minute * 5,
+		authStateCleanupInterval: time.Second * 5,
+	}
+
+	for _, o := range opts {
+		if o, ok := isCredentialsProviderOption(o); ok {
+			o.Apply(cp)
+		}
+	}
+
+	return cp, nil
 }
 
 func (cp *credentialsProvider) ID() string {
@@ -245,7 +258,7 @@ func (cp *credentialsProvider) Start(ctx context.Context) (<-chan StatusEvent, e
 	cp.running.Store(true)
 
 	// periodic cleanup of expired states
-	go util.RunFuncAtInterval(ctx, time.Second*5, func(_ context.Context) error {
+	go util.RunFuncAtInterval(ctx, cp.authStateCleanupInterval, func(_ context.Context) error {
 		cp.cleanupExpiredStates()
 
 		return nil
@@ -742,7 +755,7 @@ func (cp *credentialsProvider) cleanupExpiredStates() {
 
 	cp.statesMu.RLock()
 	for k, authState := range cp.authStates {
-		if authState.issuedAt.Before(time.Now().Add(-time.Second * 60)) {
+		if authState.issuedAt.Before(time.Now().Add(-cp.authStateTTL)) {
 			candidates = append(candidates, k)
 		}
 	}

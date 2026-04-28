@@ -15,6 +15,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.34.0
 	github.com/go-logr/logr v1.4.3
 	github.com/golang-jwt/jwt/v5 v5.2.2
+	github.com/google/go-github/v66 v66.0.0
 	github.com/openbao/openbao/api/auth/jwt/v2 v2.5.0
 	github.com/openbao/openbao/api/v2 v2.5.0
 	github.com/werbenhu/eventbus v1.0.8
@@ -57,6 +58,7 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/google/gnostic-models v0.6.9 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
+	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect

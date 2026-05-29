@@ -18,6 +18,7 @@ require (
 	github.com/google/go-github/v66 v66.0.0
 	github.com/openbao/openbao/api/auth/jwt/v2 v2.5.0
 	github.com/openbao/openbao/api/v2 v2.5.0
+	github.com/stretchr/testify v1.11.1
 	github.com/werbenhu/eventbus v1.0.8
 	golang.org/x/oauth2 v0.30.0
 	google.golang.org/api v0.240.0
@@ -26,6 +27,8 @@ require (
 	k8s.io/client-go v0.33.0
 	sigs.k8s.io/controller-runtime v0.21.0
 )
+
+require github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 
 require (
 	cloud.google.com/go/auth v0.16.2 // indirect

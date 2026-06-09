@@ -52,6 +52,12 @@ type (
 	Credential = credential.Result
 )
 
+type Provider interface {
+	isRFC8693Provider()
+}
+
+func (cp *credentialsProvider) isRFC8693Provider() {}
+
 type CredentialsProvider interface {
 	GetCredentials(ctx context.Context, tokenEndpointURL string, subjectTokenProvider token.IdentityTokenProvider, opts ...option.Option) (<-chan Credential, error)
 }
@@ -77,6 +83,25 @@ type credentialsProvider struct {
 
 func NewCredentialsProvider(_ context.Context, logger logr.Logger) (*credentialsProvider, error) {
 	return &credentialsProvider{logger: logger}, nil
+}
+
+// GetCredentialsWithOptions implements credential.Provider using option-based configuration.
+//
+// Required options: WithTokenEndpointURL, WithTokenProvider.
+func (cp *credentialsProvider) GetCredentialsWithOptions(ctx context.Context, opts ...option.Option) (<-chan Credential, error) {
+	cfg := &credentialsConfig{}
+
+	for _, opt := range opts {
+		if o, ok := isCredentialsOption(opt); ok {
+			o.Apply(cfg)
+		}
+	}
+
+	if err := validateConfig(cfg); err != nil {
+		return nil, err
+	}
+
+	return cp.GetCredentials(ctx, cfg.tokenEndpointURL, cfg.subjectTokenProvider, opts...)
 }
 
 func (cp *credentialsProvider) GetCredentials(

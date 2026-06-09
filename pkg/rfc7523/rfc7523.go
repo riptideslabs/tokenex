@@ -43,6 +43,12 @@ type (
 	Credential = credential.Result
 )
 
+type Provider interface {
+	isRFC7523Provider()
+}
+
+func (cp *credentialsProvider) isRFC7523Provider() {}
+
 // CredentialsProvider exchanges identity JWTs for OAuth2 access tokens via the
 // RFC 7523 jwt-bearer grant type.
 type CredentialsProvider interface {

@@ -6,6 +6,8 @@ package generic
 import (
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"go.riptides.io/tokenex/pkg/option"
 	"go.riptides.io/tokenex/pkg/token"
 )
@@ -42,6 +44,14 @@ func isCredentialsOption(opt any) (CredentialsOption, bool) {
 func WithIdentityTokenProvider(tokenProvider token.IdentityTokenProvider) option.Option {
 	return withCredentialsOption(func(c *credentialsConfig) {
 		c.tokenProvider = tokenProvider
+	})
+}
+
+// WithTracerProvider sets the OTel TracerProvider used to emit credential.fetch spans.
+// If not set, the tracer falls back to the current span's TracerProvider (if any), then the OTel global TracerProvider.
+func WithTracerProvider(tracerProvider trace.TracerProvider) option.Option {
+	return withCredentialsOption(func(c *credentialsConfig) {
+		c.tracerProvider = tracerProvider
 	})
 }
 

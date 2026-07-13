@@ -12,6 +12,9 @@ import (
 
 	"emperror.dev/errors"
 	"github.com/go-logr/logr"
+	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
 	corev1 "k8s.io/api/core/v1"
@@ -20,6 +23,7 @@ import (
 
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
+	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
 	"go.riptides.io/tokenex/pkg/util"
 )
 
@@ -64,6 +68,8 @@ type credentialsConfig struct {
 	authStyle        oauth2.AuthStyle
 	scopes           []string
 	additionalParams map[string][]string
+
+	tracerProvider trace.TracerProvider
 }
 
 type credentialsProvider struct {
@@ -207,7 +213,27 @@ func (r *tokenRetriever) start(ctx context.Context) error {
 	return nil
 }
 
+func (r *tokenRetriever) fetchToken(ctx context.Context, tracer trace.Tracer, configAttrs []attribute.KeyValue, ccCfg clientcredentials.Config) (*oauth2.Token, error) {
+	fetchCtx, span := tracer.Start(ctx, fetchSpanName, trace.WithAttributes(configAttrs...))
+	defer span.End()
+
+	token, err := ccCfg.Token(fetchCtx)
+	if err != nil {
+		tokenextelemetry.RecordResult(span, err)
+
+		return nil, err
+	}
+
+	span.SetAttributes(fetchSpanResultAttrs(token)...)
+	tokenextelemetry.RecordResult(span, nil)
+
+	return token, nil
+}
+
 func (r *tokenRetriever) tokenRefresherLoop(ctx context.Context) {
+	tracer := tokenextelemetry.Tracer(ctx, r.cfg.tracerProvider, instrumentationScopeName)
+	correlationID := uuid.NewString()
+
 	for {
 		r.mu.Lock()
 		clientID := r.clientID
@@ -228,7 +254,9 @@ func (r *tokenRetriever) tokenRefresherLoop(ctx context.Context) {
 			return
 		}
 
-		cfg := clientcredentials.Config{
+		configAttrs := fetchSpanConfigAttrs(&r.cfg, clientID, correlationID)
+
+		ccCfg := clientcredentials.Config{
 			ClientID:       clientID,
 			ClientSecret:   clientSecret,
 			TokenURL:       r.cfg.tokenEndpointURL,
@@ -237,7 +265,7 @@ func (r *tokenRetriever) tokenRefresherLoop(ctx context.Context) {
 			AuthStyle:      r.cfg.authStyle,
 		}
 
-		token, err := cfg.Token(ctx)
+		token, err := r.fetchToken(ctx, tracer, configAttrs, ccCfg)
 		if err != nil {
 			util.SendToChannel(r.ch, Credential{
 				Event: credential.UpdateEventType,

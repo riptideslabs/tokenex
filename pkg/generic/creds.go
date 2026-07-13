@@ -9,9 +9,13 @@ import (
 
 	"emperror.dev/errors"
 	"github.com/go-logr/logr"
+	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
+	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
 	"go.riptides.io/tokenex/pkg/token"
 	"go.riptides.io/tokenex/pkg/util"
 )
@@ -38,6 +42,8 @@ var _ CredentialsProvider = &credentialsProvider{}
 
 type credentialsConfig struct {
 	tokenProvider token.IdentityTokenProvider
+
+	tracerProvider trace.TracerProvider
 }
 
 type credentialsProvider struct {
@@ -125,19 +131,43 @@ func (cp *credentialsProvider) GetCredentials(
 
 	go func() {
 		defer close(credsChan)
-		cp.refreshCredentialsLoop(ctx, cfg.tokenProvider, credsChan, opts...)
+		cp.refreshCredentialsLoop(ctx, cfg.tokenProvider, cfg.tracerProvider, credsChan, opts...)
 	}()
 
 	return credsChan, nil
+}
+
+func fetchCredentials(ctx context.Context, tracer trace.Tracer, configAttrs []attribute.KeyValue, tokenProvider token.IdentityTokenProvider, opts ...option.Option) (credential.Token, error) {
+	fetchCtx, span := tracer.Start(ctx, fetchSpanName, trace.WithAttributes(configAttrs...))
+	defer span.End()
+
+	tok, err := tokenProvider.GetToken(fetchCtx, opts...)
+	if err != nil {
+		err = errors.WrapIf(err, "could not create token")
+		tokenextelemetry.RecordResult(span, err)
+
+		return credential.Token{}, err
+	}
+
+	span.SetAttributes(fetchSpanResultAttrs(tok)...)
+	span.SetAttributes(tokenextelemetry.IdentityTokenAttrs("id_token", tok.Token, tok.ExpiresAt)...)
+	tokenextelemetry.RecordResult(span, nil)
+
+	return tok, nil
 }
 
 // refreshCredentialsLoop handles the credential retrieval and refresh loop.
 func (cp *credentialsProvider) refreshCredentialsLoop(
 	ctx context.Context,
 	tokenProvider token.IdentityTokenProvider,
+	tracerProvider trace.TracerProvider,
 	credsChan chan credential.Result,
 	opts ...option.Option,
 ) {
+	tracer := tokenextelemetry.Tracer(ctx, tracerProvider, instrumentationScopeName)
+	correlationID := uuid.NewString()
+	configAttrs := fetchSpanConfigAttrs(opts, correlationID)
+
 	var err error
 	var token credential.Token
 
@@ -157,9 +187,9 @@ loop:
 				}
 			}
 
-			token, err = tokenProvider.GetToken(ctx, opts...)
+			token, err = fetchCredentials(ctx, tracer, configAttrs, tokenProvider, opts...)
 			if err != nil {
-				util.SendErrorToChannel(credsChan, errors.WrapIf(err, "could not create token"))
+				util.SendErrorToChannel(credsChan, err)
 
 				return
 			}

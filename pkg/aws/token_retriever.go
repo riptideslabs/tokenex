@@ -4,28 +4,33 @@
 package aws
 
 import (
-	"context"
-
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
+	"go.opentelemetry.io/otel/trace"
 
+	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
 	"go.riptides.io/tokenex/pkg/token"
+	"go.riptides.io/tokenex/pkg/util"
 )
 
 // tokenRetriever implements stscreds.IdentityTokenRetriever.
 type tokenRetriever struct {
 	provider token.IdentityTokenProvider
-	//nolint: containedctx
-	ctx context.Context
+
+	ctx util.ContextHolder
 }
 
 // GetIdentityToken returns the token from the provider after validating it.
 func (t *tokenRetriever) GetIdentityToken() ([]byte, error) {
-	token, err := t.provider.GetToken(t.ctx)
+	ctx := t.ctx.Context()
+
+	idToken, err := t.provider.GetToken(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	return []byte(token.Token), nil
+	trace.SpanFromContext(ctx).SetAttributes(tokenextelemetry.IdentityTokenAttrs("id_token", idToken.Token, idToken.ExpiresAt)...)
+
+	return []byte(idToken.Token), nil
 }
 
 // Ensure tokenRetriever implements the interface.

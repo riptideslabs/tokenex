@@ -6,6 +6,8 @@ package oauth2ac
 import (
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"go.riptides.io/tokenex/pkg/option"
 )
 
@@ -59,5 +61,13 @@ func WithAuthStateTTL(ttl time.Duration) option.Option {
 func WithAuthStateCleanupInterval(d time.Duration) option.Option {
 	return withCredentialsProviderOption(func(cp *credentialsProvider) {
 		cp.authStateCleanupInterval = d
+	})
+}
+
+// WithTracerProvider sets the OTel TracerProvider used to emit credential.fetch spans.
+// If not set, the tracer falls back to the current span's TracerProvider (if any), then the OTel global TracerProvider.
+func WithTracerProvider(tracerProvider trace.TracerProvider) option.Option {
+	return withCredentialsProviderOption(func(cp *credentialsProvider) {
+		cp.tracerProvider = tracerProvider
 	})
 }

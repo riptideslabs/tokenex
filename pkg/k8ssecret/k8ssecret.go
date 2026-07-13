@@ -8,6 +8,9 @@ import (
 
 	"emperror.dev/errors"
 	"github.com/go-logr/logr"
+	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	corev1 "k8s.io/api/core/v1"
 	toolscache "k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -15,6 +18,7 @@ import (
 
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
+	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
 	"go.riptides.io/tokenex/pkg/util"
 )
 
@@ -55,6 +59,8 @@ var _ CredentialsProvider = &credentialsProvider{}
 
 type credentialsConfig struct {
 	secretRef SecretRef
+
+	tracerProvider trace.TracerProvider
 }
 
 type credentialsProvider struct {
@@ -112,13 +118,21 @@ func (cp *credentialsProvider) GetCredentialsWithOptions(ctx context.Context, op
 		return nil, err
 	}
 
-	return cp.GetCredentials(ctx, cfg.secretRef)
+	return cp.getCredentials(ctx, cfg)
 }
 
 func (cp *credentialsProvider) GetCredentials(
 	ctx context.Context,
 	secretRef SecretRef,
 ) (<-chan Credential, error) {
+	return cp.getCredentials(ctx, &credentialsConfig{secretRef: secretRef})
+}
+
+func (cp *credentialsProvider) getCredentials(ctx context.Context, cfg *credentialsConfig) (<-chan Credential, error) {
+	tracer := tokenextelemetry.Tracer(ctx, cfg.tracerProvider, instrumentationScopeName)
+	correlationID := uuid.NewString()
+	configAttrs := spanConfigAttrs(cfg.secretRef, correlationID)
+
 	informer, err := cp.cache.GetInformer(ctx, &corev1.Secret{}, cache.BlockUntilSynced(true))
 	if err != nil {
 		return nil, errors.WrapIf(err, "could not get informer")
@@ -128,13 +142,13 @@ func (cp *credentialsProvider) GetCredentials(
 
 	handler, err := informer.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
-			cp.handleEvent(credsChan, secretRef, obj, false)
+			cp.handleEvent(ctx, tracer, configAttrs, credsChan, cfg.secretRef, obj, false)
 		},
 		UpdateFunc: func(oldObj, newObj any) {
-			cp.handleEvent(credsChan, secretRef, newObj, false)
+			cp.handleEvent(ctx, tracer, configAttrs, credsChan, cfg.secretRef, newObj, false)
 		},
 		DeleteFunc: func(obj any) {
-			cp.handleEvent(credsChan, secretRef, obj, true)
+			cp.handleEvent(ctx, tracer, configAttrs, credsChan, cfg.secretRef, obj, true)
 		},
 	})
 	if err != nil {
@@ -146,11 +160,8 @@ func (cp *credentialsProvider) GetCredentials(
 	}
 
 	// do initial check of the specified secret
-	if err := cp.initialValidation(ctx, secretRef); err != nil {
-		util.SendToChannel(credsChan, Credential{
-			Err:   err,
-			Event: credential.UpdateEventType,
-		})
+	if err := cp.initialValidation(ctx, cfg.secretRef); err != nil {
+		cp.publishFetch(ctx, tracer, configAttrs, credsChan, nil, err)
 	}
 
 	go func() {
@@ -182,7 +193,39 @@ func (cp *credentialsProvider) initialValidation(ctx context.Context, secretRef 
 	return nil
 }
 
-func (cp *credentialsProvider) handleEvent(credsChan chan Credential, secretRef SecretRef, obj any, del bool) {
+func (cp *credentialsProvider) publishFetch(ctx context.Context, tracer trace.Tracer, configAttrs []attribute.KeyValue, credsChan chan Credential, tok *credential.Token, fetchErr error) {
+	_, span := tracer.Start(ctx, fetchSpanName, trace.WithAttributes(configAttrs...))
+	defer span.End()
+
+	if fetchErr != nil {
+		tokenextelemetry.RecordResult(span, fetchErr)
+		util.SendToChannel(credsChan, Credential{
+			Err:   fetchErr,
+			Event: credential.UpdateEventType,
+		})
+
+		return
+	}
+
+	span.SetAttributes(fetchSpanResultAttrs()...)
+	tokenextelemetry.RecordResult(span, nil)
+	util.SendToChannel(credsChan, Credential{
+		Credential: tok,
+		Event:      credential.UpdateEventType,
+	})
+}
+
+func (cp *credentialsProvider) publishRemove(ctx context.Context, tracer trace.Tracer, configAttrs []attribute.KeyValue, credsChan chan Credential) {
+	_, span := tracer.Start(ctx, removeSpanName, trace.WithAttributes(configAttrs...))
+	defer span.End()
+
+	tokenextelemetry.RecordResult(span, nil)
+	util.SendToChannel(credsChan, Credential{
+		Event: credential.RemoveEventType,
+	})
+}
+
+func (cp *credentialsProvider) handleEvent(ctx context.Context, tracer trace.Tracer, configAttrs []attribute.KeyValue, credsChan chan Credential, secretRef SecretRef, obj any, del bool) {
 	secret, ok := obj.(*corev1.Secret)
 	if !ok {
 		return
@@ -193,27 +236,19 @@ func (cp *credentialsProvider) handleEvent(credsChan chan Credential, secretRef 
 	}
 
 	if del {
-		util.SendToChannel(credsChan, Credential{
-			Event: credential.RemoveEventType,
-		})
+		cp.publishRemove(ctx, tracer, configAttrs, credsChan)
 
 		return
 	}
 
 	value, ok := secret.Data[secretRef.Key]
 	if !ok {
-		util.SendToChannel(credsChan, Credential{
-			Err:   ErrMissingData,
-			Event: credential.UpdateEventType,
-		})
+		cp.publishFetch(ctx, tracer, configAttrs, credsChan, nil, ErrMissingData)
 
 		return
 	}
 
-	util.SendToChannel(credsChan, Credential{
-		Credential: &credential.Token{
-			Token: string(value),
-		},
-		Event: credential.UpdateEventType,
-	})
+	cp.publishFetch(ctx, tracer, configAttrs, credsChan, &credential.Token{
+		Token: string(value),
+	}, nil)
 }

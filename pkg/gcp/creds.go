@@ -10,12 +10,16 @@ import (
 
 	"emperror.dev/errors"
 	"github.com/go-logr/logr"
+	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2"
 	google_option "google.golang.org/api/option"
 	stsv1 "google.golang.org/api/sts/v1"
 
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
+	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
 	"go.riptides.io/tokenex/pkg/token"
 	"go.riptides.io/tokenex/pkg/util"
 )
@@ -27,6 +31,8 @@ type credentialsConfig struct {
 	scopes                []string // Scope for the access token, defaults to ["https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/userinfo.email"]
 	tokenLifetime         *int64   // Lifetime in seconds for the access token of the impersonated service account, optional. If set it should be less than or equal to 1 hour
 	identityTokenProvider token.IdentityTokenProvider
+
+	tracerProvider trace.TracerProvider
 }
 
 // CredentialsProvider defines the interface for obtaining GCP credentials.
@@ -81,16 +87,46 @@ func validateConfig(cfg *credentialsConfig) error {
 	return nil
 }
 
+func fetchAccessToken(
+	ctx context.Context,
+	tracer trace.Tracer,
+	configAttrs []attribute.KeyValue,
+	genAccessTokenFunc func(ctx context.Context) (*oauth2.Token, error),
+	impersonated bool,
+) (*oauth2.Token, error) {
+	fetchCtx, span := tracer.Start(ctx, fetchSpanName, trace.WithAttributes(configAttrs...))
+	defer span.End()
+
+	accessToken, err := genAccessTokenFunc(fetchCtx)
+	if err != nil {
+		err = errors.WrapIf(err, "failed to get access token")
+		tokenextelemetry.RecordResult(span, err)
+
+		return nil, err
+	}
+
+	span.SetAttributes(fetchSpanResultAttrs(accessToken, impersonated)...)
+	tokenextelemetry.RecordResult(span, nil)
+
+	return accessToken, nil
+}
+
 // refreshCredentialsLoop handles the credential retrieval and refresh loop.
 func (cp *credentialsProvider) refreshCredentialsLoop(
 	ctx context.Context,
-	genAccessTokenFunc func() (*oauth2.Token, error),
+	cfg *credentialsConfig,
+	genAccessTokenFunc func(ctx context.Context) (*oauth2.Token, error),
 	credsChan chan credential.Result,
+	tracer trace.Tracer,
 ) {
+	correlationID := uuid.NewString()
+	configAttrs := fetchSpanConfigAttrs(cfg, correlationID)
+	impersonated := cfg.serviceAccountEmail != ""
+
 	for {
-		accessToken, err := genAccessTokenFunc()
+		accessToken, err := fetchAccessToken(ctx, tracer, configAttrs, genAccessTokenFunc, impersonated)
 		if err != nil {
-			util.SendErrorToChannel(credsChan, errors.WrapIf(err, "failed to get access token"))
+			util.SendErrorToChannel(credsChan, err)
 
 			return
 		}
@@ -235,32 +271,28 @@ func (cp *credentialsProvider) GetCredentials(
 		scope = strings.Join(cfg.scopes, " ")
 	}
 
+	tracer := tokenextelemetry.Tracer(ctx, cfg.tracerProvider, instrumentationScopeName)
+
 	stsAccessTokenSource := &stsAccessTokenSource{
 		stsService:      cp.stsService,
 		idTokenProvider: tokenProvider,
 		audience:        cfg.audience,
 		scope:           scope,
-		ctx:             ctx,
+		tracer:          tracer,
 	}
 
-	stsAccessToken, err := stsAccessTokenSource.Token()
-	if err != nil {
-		return nil, errors.WrapIf(err, "failed to get initial STS access token")
-	}
-
-	cp.logger.V(2).Info("Initial STS access token retrieved", "expiry", stsAccessToken.Expiry)
-
-	genAccessTokenFunc := func() (*oauth2.Token, error) {
+	genAccessTokenFunc := func(ctx context.Context) (*oauth2.Token, error) {
+		stsAccessTokenSource.ctx.Store(ctx)
 		// if no service account impersonation is needed, return the STS access token
-		return stsAccessTokenSource.Token()
+		return stsAccessTokenSource.Token() //nolint:contextcheck
 	}
 
 	if cfg.serviceAccountEmail != "" {
-		stsAccessToken := oauth2.ReuseTokenSource(stsAccessToken, stsAccessTokenSource)
+		tokenSource := oauth2.ReuseTokenSource(nil, stsAccessTokenSource)
 
 		// if service account impersonation is needed, generate access token for the service account
-		genAccessTokenFunc = func() (*oauth2.Token, error) {
-			return generateAccessToken(ctx, stsAccessToken, cfg.serviceAccountEmail, cfg.scopes, cfg.tokenLifetime)
+		genAccessTokenFunc = func(ctx context.Context) (*oauth2.Token, error) {
+			return generateAccessToken(ctx, tracer, stsAccessTokenSource, tokenSource, cfg.serviceAccountEmail, cfg.scopes, cfg.tokenLifetime)
 		}
 	}
 
@@ -268,7 +300,7 @@ func (cp *credentialsProvider) GetCredentials(
 
 	go func() {
 		defer close(credsChan)
-		cp.refreshCredentialsLoop(ctx, genAccessTokenFunc, credsChan)
+		cp.refreshCredentialsLoop(ctx, cfg, genAccessTokenFunc, credsChan, tracer)
 	}()
 
 	return credsChan, nil

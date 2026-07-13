@@ -12,12 +12,32 @@ import (
 	"emperror.dev/errors"
 	"github.com/cenkalti/backoff/v5"
 	"github.com/go-logr/logr"
+	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
 	"go.riptides.io/tokenex/pkg/credential"
+	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
 	"go.riptides.io/tokenex/pkg/util"
 )
+
+const gcpExchangeSpanName = "vault.gcp.exchange_access_token"
+
+func gcpExchangeSpanConfigAttrs(scopes []string, correlationID string) []attribute.KeyValue {
+	return []attribute.KeyValue{
+		attribute.StringSlice("cfg.scopes", scopes),
+		attribute.String("correlation_id", correlationID),
+	}
+}
+
+func gcpExchangeSpanResultAttrs(tok *oauth2.Token) []attribute.KeyValue {
+	return []attribute.KeyValue{
+		attribute.Bool("credential.expires", true),
+		attribute.String("credential.expires_at", tok.Expiry.UTC().Format(time.RFC3339)),
+	}
+}
 
 // gcpServiceAccountKeySecret represents the structure of the service account key material returned by Vault's Google Cloud secrets engine when configured to return service account keys.
 // It contains the base64-encoded private key data.
@@ -39,41 +59,63 @@ func (s *gcpServiceAccountKeySecret) ServiceAccountKeyJSON() ([]byte, error) {
 type gcpAccessTokenProvider struct {
 	serviceAccountKeyJSON []byte
 	scopes                []string
+	tracer                trace.Tracer
 
 	logger logr.Logger
 }
 
-// GetCredentials begins the process of exchanging the service account key for an access token and refreshing it as needed until the context is canceled.
-func (r *gcpAccessTokenProvider) GetCredentials(ctx context.Context, credsChan chan credential.Result) {
+func (r *gcpAccessTokenProvider) fetchAccessToken(ctx context.Context, parentSpanContext trace.SpanContext, configAttrs []attribute.KeyValue) (*oauth2.Token, error) {
+	fetchCtx, span := r.tracer.Start(ctx, gcpExchangeSpanName, trace.WithAttributes(configAttrs...), trace.WithLinks(trace.Link{SpanContext: parentSpanContext}))
+	defer span.End()
+
+	// use the service account key to authenticate to GCP and obtain an access token
+	gcpCreds, err := google.CredentialsFromJSON(fetchCtx, r.serviceAccountKeyJSON, r.scopes...)
+	if err != nil {
+		err = errors.WrapIf(err, "failed to obtain GCP credentials from service account key")
+		tokenextelemetry.RecordResult(span, err)
+
+		return nil, err
+	}
+
+	// if the SA key was just created it's possible that it may take a few seconds for GCP to propagate the key and allow it to be used for authentication.
+	// This can result in transient errors when trying to exchange the key for an access token.
 	b := backoff.NewExponentialBackOff()
-
-	for {
-		// use the service account key to authenticate to GCP and obtain an access token
-		gcpCreds, err := google.CredentialsFromJSON(ctx, r.serviceAccountKeyJSON, r.scopes...)
+	token, err := backoff.Retry(fetchCtx, func() (*oauth2.Token, error) {
+		token, err := gcpCreds.TokenSource.Token()
 		if err != nil {
-			util.SendErrorToChannel(credsChan, errors.WrapIf(err, "failed to obtain GCP credentials from service account key"))
+			if strings.Contains(err.Error(), "invalid_grant") {
+				r.logger.V(2).Info("Received invalid_grant error when exchanging service account key for access token, likely due to GCP propagation delay. Retrying...", "error", err)
 
-			return
-		}
-
-		// if the SA key was just created it's possible that it may take a few seconds for GCP to propagate the key and allow it to be used for authentication.
-		// This can result in transient errors when trying to exchange the key for an access token.
-		token, err := backoff.Retry(ctx, func() (*oauth2.Token, error) {
-			token, err := gcpCreds.TokenSource.Token()
-			if err != nil {
-				if strings.Contains(err.Error(), "invalid_grant") {
-					r.logger.V(2).Info("Received invalid_grant error when exchanging service account key for access token, likely due to GCP propagation delay. Retrying...", "error", err)
-
-					return nil, err
-				}
-
-				return nil, backoff.Permanent(errors.WrapIf(err, "failed to exchange service account key for access token"))
+				return nil, err
 			}
 
-			return token, nil
-		}, backoff.WithBackOff(b), backoff.WithMaxElapsedTime(30*time.Second))
+			return nil, backoff.Permanent(errors.WrapIf(err, "failed to exchange service account key for access token"))
+		}
+
+		return token, nil
+	}, backoff.WithBackOff(b), backoff.WithMaxElapsedTime(30*time.Second))
+	if err != nil {
+		err = errors.WrapIf(err, "failed to obtain access token from GCP using service account key")
+		tokenextelemetry.RecordResult(span, err)
+
+		return nil, err
+	}
+
+	span.SetAttributes(gcpExchangeSpanResultAttrs(token)...)
+	tokenextelemetry.RecordResult(span, nil)
+
+	return token, nil
+}
+
+// GetCredentials begins the process of exchanging the service account key for an access token and refreshing it as needed until the context is canceled.
+func (r *gcpAccessTokenProvider) GetCredentials(ctx context.Context, parentSpanContext trace.SpanContext, credsChan chan credential.Result) {
+	correlationID := uuid.NewString()
+	configAttrs := gcpExchangeSpanConfigAttrs(r.scopes, correlationID)
+
+	for {
+		token, err := r.fetchAccessToken(ctx, parentSpanContext, configAttrs)
 		if err != nil {
-			util.SendErrorToChannel(credsChan, errors.WrapIf(err, "failed to obtain access token from GCP using service account key"))
+			util.SendErrorToChannel(credsChan, err)
 
 			return
 		}

@@ -17,9 +17,13 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/go-github/v66/github"
+	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
+	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
 	"go.riptides.io/tokenex/pkg/util"
 )
 
@@ -37,6 +41,8 @@ type credentialsConfig struct {
 
 	baseURL    string
 	httpClient *http.Client
+
+	tracerProvider trace.TracerProvider
 }
 
 func setDefaults(cfg *credentialsConfig) {
@@ -255,6 +261,24 @@ func (cp *credentialsProvider) GetCredentials(ctx context.Context, opts ...optio
 	return credsChan, nil
 }
 
+func fetchCredentials(ctx context.Context, tracer trace.Tracer, configAttrs []attribute.KeyValue, client *github.Client, cfg *credentialsConfig, instTokenOpts *github.InstallationTokenOptions) (*github.InstallationToken, error) {
+	fetchCtx, span := tracer.Start(ctx, fetchSpanName, trace.WithAttributes(configAttrs...))
+	defer span.End()
+
+	tok, _, err := client.Apps.CreateInstallationToken(fetchCtx, cfg.installationID, instTokenOpts)
+	if err != nil {
+		err = errors.WrapIfWithDetails(err, "failed to mint installation token", "appID", cfg.appID, "installationID", cfg.installationID)
+		tokenextelemetry.RecordResult(span, err)
+
+		return nil, err
+	}
+
+	span.SetAttributes(fetchSpanResultAttrs(tok)...)
+	tokenextelemetry.RecordResult(span, nil)
+
+	return tok, nil
+}
+
 func (cp *credentialsProvider) refreshLoop(ctx context.Context, cfg *credentialsConfig, credsChan chan credential.Result) {
 	logger := cp.logger.WithValues("appID", cfg.appID, "installationID", cfg.installationID)
 
@@ -271,10 +295,14 @@ func (cp *credentialsProvider) refreshLoop(ctx context.Context, cfg *credentials
 		Permissions:   cfg.permissions,
 	}
 
+	tracer := tokenextelemetry.Tracer(ctx, cfg.tracerProvider, instrumentationScopeName)
+	correlationID := uuid.NewString()
+	configAttrs := fetchSpanConfigAttrs(cfg, correlationID)
+
 	for {
-		tok, _, err := client.Apps.CreateInstallationToken(ctx, cfg.installationID, opts)
+		tok, err := fetchCredentials(ctx, tracer, configAttrs, client, cfg, opts)
 		if err != nil {
-			util.SendErrorToChannel(credsChan, errors.WrapIfWithDetails(err, "failed to mint installation token", "appID", cfg.appID, "installationID", cfg.installationID))
+			util.SendErrorToChannel(credsChan, err)
 
 			return
 		}

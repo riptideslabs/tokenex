@@ -16,9 +16,13 @@ import (
 	"emperror.dev/errors"
 	"github.com/go-logr/logr"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
+	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
 	"go.riptides.io/tokenex/pkg/token"
 	"go.riptides.io/tokenex/pkg/util"
 )
@@ -30,6 +34,8 @@ type credentialsConfig struct {
 	identityDomainURL     string
 	rsaPubKeyDer          []byte
 	identityTokenProvider token.IdentityTokenProvider
+
+	tracerProvider trace.TracerProvider
 }
 
 // CredentialsProvider defines the interface for obtaining OCI credentials.
@@ -87,37 +93,61 @@ type Provider interface {
 
 func (cp *credentialsProvider) isOCI() {}
 
+func fetchCredentials(ctx context.Context, tracer trace.Tracer, configAttrs []attribute.KeyValue, cfg *credentialsConfig, tokenEndpoint string, publicKey string) (credential.Token, error) {
+	fetchCtx, span := tracer.Start(ctx, fetchSpanName, trace.WithAttributes(configAttrs...))
+	defer span.End()
+
+	idToken, err := cfg.identityTokenProvider.GetToken(fetchCtx)
+	if err != nil {
+		err = errors.WrapIf(err, "failed to get identity token")
+		tokenextelemetry.RecordResult(span, err)
+
+		return credential.Token{}, err
+	}
+
+	span.SetAttributes(tokenextelemetry.IdentityTokenAttrs("id_token", idToken.Token, idToken.ExpiresAt)...)
+
+	authToken, err := exchangeToken(fetchCtx, tokenEndpoint, cfg.clientID, cfg.clientSecret, idToken.Token, publicKey)
+	if err != nil {
+		err = errors.WrapIf(err, "token exchange failed")
+		tokenextelemetry.RecordResult(span, err)
+
+		return credential.Token{}, err
+	}
+
+	expTime, err := getTokenExpiration(authToken)
+	if err != nil {
+		err = errors.WrapIf(err, "failed to get expiration time of the received UPST")
+		tokenextelemetry.RecordResult(span, err)
+
+		return credential.Token{}, err
+	}
+
+	ociCredential := credential.Token{
+		Token:     authToken.Raw,
+		ExpiresAt: expTime,
+	}
+
+	span.SetAttributes(fetchSpanResultAttrs(expTime)...)
+	tokenextelemetry.RecordResult(span, nil)
+
+	return ociCredential, nil
+}
+
 // refreshCredentialsLoop handles the credential retrieval and refresh loop.
 func (cp *credentialsProvider) refreshCredentialsLoop(ctx context.Context, cfg *credentialsConfig, credsChan chan credential.Result) {
+	tracer := tokenextelemetry.Tracer(ctx, cfg.tracerProvider, instrumentationScopeName)
 	tokenEndpoint := getTokenEndpoint(cfg.identityDomainURL)
 	publicKey := base64.StdEncoding.EncodeToString(cfg.rsaPubKeyDer)
+	correlationID := uuid.NewString()
+	configAttrs := fetchSpanConfigAttrs(cfg, correlationID)
 
 	for {
-		idToken, err := cfg.identityTokenProvider.GetToken(ctx)
+		ociCredential, err := fetchCredentials(ctx, tracer, configAttrs, cfg, tokenEndpoint, publicKey)
 		if err != nil {
-			util.SendErrorToChannel(credsChan, errors.WrapIf(err, "failed to get identity token"))
+			util.SendErrorToChannel(credsChan, err)
 
 			return
-		}
-
-		authToken, err := exchangeToken(ctx, tokenEndpoint, cfg.clientID, cfg.clientSecret, idToken.Token, publicKey)
-		if err != nil {
-			util.SendErrorToChannel(credsChan, errors.WrapIf(err, "token exchange failed"))
-
-			return
-		}
-
-		expTime, err := getTokenExpiration(authToken)
-		if err != nil {
-			util.SendErrorToChannel(credsChan, errors.WrapIf(err, "failed to get expiration time of the received UPST"))
-
-			return
-		}
-
-		// Send credentials
-		ociCredential := credential.Token{
-			Token:     authToken.Raw,
-			ExpiresAt: expTime,
 		}
 
 		// Calculate when to refresh

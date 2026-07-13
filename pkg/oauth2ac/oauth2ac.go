@@ -17,6 +17,7 @@ import (
 	"emperror.dev/errors"
 	"github.com/go-logr/logr"
 	"github.com/werbenhu/eventbus"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2"
 	corev1 "k8s.io/api/core/v1"
 	toolscache "k8s.io/client-go/tools/cache"
@@ -24,6 +25,7 @@ import (
 
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
+	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
 	"go.riptides.io/tokenex/pkg/util"
 )
 
@@ -150,10 +152,13 @@ type credentialsProvider struct {
 	statusCh  chan StatusEvent
 	refreshCh chan struct{}
 
-	mu           sync.RWMutex
-	clientID     string
-	clientSecret string
-	secretError  error
+	mu                   sync.RWMutex
+	clientID             string
+	clientSecret         string
+	secretError          error
+	authorizeSpanContext trace.SpanContext
+
+	tracerProvider trace.TracerProvider
 
 	statesMu                 sync.RWMutex
 	authStates               map[string]authState
@@ -287,7 +292,9 @@ func (cp *credentialsProvider) Authorize(ctx context.Context, authState, code st
 		return nil, errors.WithStack(ErrAlreadyAuthorized)
 	}
 
-	token, err := cp.exchangeToken(ctx, authState, code)
+	tracer := tokenextelemetry.Tracer(ctx, cp.tracerProvider, instrumentationScopeName)
+
+	token, sc, err := cp.exchangeToken(ctx, tracer, authState, code)
 	if err != nil {
 		return nil, err
 	}
@@ -303,6 +310,10 @@ func (cp *credentialsProvider) Authorize(ctx context.Context, authState, code st
 	if err := cp.storeTokenAndAuthorize(ctx, token); err != nil {
 		return nil, err
 	}
+
+	cp.mu.Lock()
+	cp.authorizeSpanContext = sc
+	cp.mu.Unlock()
 
 	if cp.syncGate.IsOpen() {
 		cp.signalRefresh()
@@ -387,7 +398,15 @@ func (cp *credentialsProvider) sendStatusEvent(event StatusEvent) {
 	}
 }
 
-func (cp *credentialsProvider) exchangeToken(ctx context.Context, authState string, code string) (*oauth2.Token, error) {
+func (cp *credentialsProvider) exchangeToken(ctx context.Context, tracer trace.Tracer, authState string, code string) (*oauth2.Token, trace.SpanContext, error) {
+	cp.mu.RLock()
+	clientID := cp.clientID
+	cp.mu.RUnlock()
+
+	fetchCtx, span := tracer.Start(ctx, fetchSpanName, trace.WithAttributes(exchangeSpanConfigAttrs(cp.cfg, clientID, cp.id)...))
+	defer span.End()
+	sc := span.SpanContext()
+
 	opts := []oauth2.AuthCodeOption{}
 
 	cp.logger.V(2).Info("exchange", "state", authState)
@@ -396,7 +415,10 @@ func (cp *credentialsProvider) exchangeToken(ctx context.Context, authState stri
 	st, ok := cp.authStates[authState]
 	cp.statesMu.RUnlock()
 	if !ok {
-		return nil, errors.WithStack(ErrUnknownAuthState)
+		err := errors.WithStack(ErrUnknownAuthState)
+		tokenextelemetry.RecordResult(span, err)
+
+		return nil, sc, err
 	}
 
 	if cp.cfg.UsePKCE {
@@ -413,7 +435,17 @@ func (cp *credentialsProvider) exchangeToken(ctx context.Context, authState stri
 		}
 	}
 
-	return st.cfg.Exchange(ctx, code, opts...)
+	tok, err := st.cfg.Exchange(fetchCtx, code, opts...)
+	if err != nil {
+		tokenextelemetry.RecordResult(span, err)
+
+		return nil, sc, err
+	}
+
+	span.SetAttributes(resultAttrs(tok)...)
+	tokenextelemetry.RecordResult(span, nil)
+
+	return tok, sc, nil
 }
 
 func (cp *credentialsProvider) storeTokenAndAuthorize(ctx context.Context, token *oauth2.Token) error {
@@ -496,7 +528,36 @@ func (cp *credentialsProvider) startInformer(ctx context.Context) (func(), error
 	}, nil
 }
 
-func (cp *credentialsProvider) getToken(ctx context.Context, forceRefresh bool) (*oauth2.Token, error) {
+func (cp *credentialsProvider) fetchToken(ctx context.Context, tracer trace.Tracer, correlationID string, t oauth2.Token) (*oauth2.Token, error) {
+	cp.mu.RLock()
+	clientID := cp.clientID
+	sc := cp.authorizeSpanContext
+	cp.mu.RUnlock()
+
+	spanOpts := []trace.SpanStartOption{trace.WithAttributes(fetchSpanConfigAttrs(cp.cfg, clientID, correlationID)...)}
+	if sc.IsValid() {
+		spanOpts = append(spanOpts, trace.WithLinks(trace.Link{SpanContext: sc}))
+	}
+
+	fetchCtx, span := tracer.Start(ctx, fetchSpanName, spanOpts...)
+	defer span.End()
+
+	cfg := cp.oauth2Config()
+
+	accessToken, err := cfg.TokenSource(fetchCtx, &t).Token()
+	if err != nil {
+		tokenextelemetry.RecordResult(span, err)
+
+		return nil, err
+	}
+
+	span.SetAttributes(resultAttrs(accessToken)...)
+	tokenextelemetry.RecordResult(span, nil)
+
+	return accessToken, nil
+}
+
+func (cp *credentialsProvider) getToken(ctx context.Context, tracer trace.Tracer, correlationID string, forceRefresh bool) (*oauth2.Token, error) {
 	accessToken, err := cp.tokenStore.Get(ctx, cp.id)
 	if err != nil {
 		return nil, err
@@ -514,8 +575,7 @@ func (cp *credentialsProvider) getToken(ctx context.Context, forceRefresh bool) 
 	t := *accessToken
 	t.Expiry = time.Now().Add(-time.Hour)
 
-	cfg := cp.oauth2Config()
-	accessToken, err = cfg.TokenSource(ctx, &t).Token()
+	accessToken, err = cp.fetchToken(ctx, tracer, correlationID, t)
 	if err != nil {
 		return nil, err
 	}
@@ -528,6 +588,9 @@ func (cp *credentialsProvider) getToken(ctx context.Context, forceRefresh bool) 
 }
 
 func (cp *credentialsProvider) tokenRefresherLoop(ctx context.Context) {
+	tracer := tokenextelemetry.Tracer(ctx, cp.tracerProvider, instrumentationScopeName)
+	correlationID := cp.id
+
 	var refreshTime time.Duration
 	for {
 		cp.logger.V(3).Info("wait for authorization")
@@ -535,7 +598,7 @@ func (cp *credentialsProvider) tokenRefresherLoop(ctx context.Context) {
 			return
 		}
 
-		accessToken, err := cp.getToken(ctx, refreshTime > 0)
+		accessToken, err := cp.getToken(ctx, tracer, correlationID, refreshTime > 0)
 		if err != nil {
 			cp.logger.Error(err, "could not get token from storage")
 

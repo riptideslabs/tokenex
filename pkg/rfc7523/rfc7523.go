@@ -26,10 +26,14 @@ import (
 
 	"emperror.dev/errors"
 	"github.com/go-logr/logr"
+	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2"
 
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
+	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
 	"go.riptides.io/tokenex/pkg/token"
 	"go.riptides.io/tokenex/pkg/util"
 )
@@ -80,6 +84,8 @@ type credentialsConfig struct {
 	additionalFields map[string]string
 	bodyFormat       BodyFormat
 	httpClient       *http.Client
+
+	tracerProvider trace.TracerProvider
 }
 
 type credentialsProvider struct {
@@ -154,6 +160,34 @@ func validateConfig(cfg *credentialsConfig) error {
 	return nil
 }
 
+func fetchCredentials(ctx context.Context, tracer trace.Tracer, configAttrs []attribute.KeyValue, httpClient *http.Client, cfg *credentialsConfig) (*oauth2.Token, error) {
+	fetchCtx, span := tracer.Start(ctx, fetchSpanName, trace.WithAttributes(configAttrs...))
+	defer span.End()
+
+	identityToken, err := cfg.tokenProvider.GetToken(fetchCtx)
+	if err != nil {
+		err = errors.WrapIf(err, "could not get identity token")
+		tokenextelemetry.RecordResult(span, err)
+
+		return nil, err
+	}
+
+	span.SetAttributes(tokenextelemetry.IdentityTokenAttrs("id_token", identityToken.Token, identityToken.ExpiresAt)...)
+
+	tok, err := exchangeToken(fetchCtx, httpClient, cfg, identityToken.Token)
+	if err != nil {
+		err = errors.WrapIf(err, "could not exchange jwt-bearer token")
+		tokenextelemetry.RecordResult(span, err)
+
+		return nil, err
+	}
+
+	span.SetAttributes(fetchSpanResultAttrs(tok)...)
+	tokenextelemetry.RecordResult(span, nil)
+
+	return tok, nil
+}
+
 func (cp *credentialsProvider) refreshCredentialsLoop(
 	ctx context.Context,
 	cfg *credentialsConfig,
@@ -164,6 +198,10 @@ func (cp *credentialsProvider) refreshCredentialsLoop(
 		httpClient = http.DefaultClient
 	}
 
+	tracer := tokenextelemetry.Tracer(ctx, cfg.tracerProvider, instrumentationScopeName)
+	correlationID := uuid.NewString()
+	configAttrs := fetchSpanConfigAttrs(cfg, correlationID)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -171,16 +209,9 @@ func (cp *credentialsProvider) refreshCredentialsLoop(
 		default:
 		}
 
-		identityToken, err := cfg.tokenProvider.GetToken(ctx)
+		tok, err := fetchCredentials(ctx, tracer, configAttrs, httpClient, cfg)
 		if err != nil {
-			util.SendErrorToChannel(credsChan, errors.WrapIf(err, "could not get identity token"))
-
-			return
-		}
-
-		tok, err := exchangeToken(ctx, httpClient, cfg, identityToken.Token)
-		if err != nil {
-			util.SendErrorToChannel(credsChan, errors.WrapIf(err, "could not exchange jwt-bearer token"))
+			util.SendErrorToChannel(credsChan, err)
 
 			return
 		}

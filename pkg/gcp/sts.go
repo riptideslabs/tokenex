@@ -4,32 +4,48 @@
 package gcp
 
 import (
-	"context"
 	"time"
 
 	"emperror.dev/errors"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2"
 	stsv1 "google.golang.org/api/sts/v1"
 
+	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
 	"go.riptides.io/tokenex/pkg/token"
+	"go.riptides.io/tokenex/pkg/util"
 )
 
-type stsAccessTokenSource struct {
-	oauth2.TokenSource
+const stsExchangeSpanName = "exchange_token"
 
+type stsAccessTokenSource struct {
 	stsService *stsv1.Service
 
 	idTokenProvider token.IdentityTokenProvider
 	audience        string
 	scope           string
-	ctx             context.Context //nolint:containedctx
+	tracer          trace.Tracer
+
+	ctx util.ContextHolder
 }
 
 func (s *stsAccessTokenSource) Token() (*oauth2.Token, error) {
-	idToken, err := s.idTokenProvider.GetToken(s.ctx)
+	ctx, span := s.tracer.Start(s.ctx.Context(), stsExchangeSpanName, trace.WithAttributes(
+		attribute.String("cfg.audience", s.audience),
+		attribute.String("cfg.scope", s.scope),
+	))
+	defer span.End()
+
+	idToken, err := s.idTokenProvider.GetToken(ctx)
 	if err != nil {
-		return nil, errors.WrapIf(err, "failed to get ID token")
+		err = errors.WrapIf(err, "failed to get ID token")
+		tokenextelemetry.RecordResult(span, err)
+
+		return nil, err
 	}
+
+	span.SetAttributes(tokenextelemetry.IdentityTokenAttrs("id_token", idToken.Token, idToken.ExpiresAt)...)
 
 	// exchange ID token for STS token
 	req := &stsv1.GoogleIdentityStsV1ExchangeTokenRequest{
@@ -41,15 +57,23 @@ func (s *stsAccessTokenSource) Token() (*oauth2.Token, error) {
 		SubjectToken:       idToken.Token,
 	}
 
-	resp, err := s.stsService.V1.Token(req).Context(s.ctx).Do()
+	resp, err := s.stsService.V1.Token(req).Context(ctx).Do()
 	if err != nil {
-		return nil, errors.WrapIf(err, "failed to exchange ID token for STS token")
+		err = errors.WrapIf(err, "failed to exchange ID token for STS token")
+		tokenextelemetry.RecordResult(span, err)
+
+		return nil, err
 	}
 
-	return &oauth2.Token{
+	tok := &oauth2.Token{
 		AccessToken: resp.AccessToken,
 		TokenType:   "Bearer",
 		ExpiresIn:   resp.ExpiresIn,
 		Expiry:      time.Now().Add(time.Duration(resp.ExpiresIn) * time.Second),
-	}, nil
+	}
+
+	span.SetAttributes(attribute.String("sts.access_token.expires_at", tok.Expiry.UTC().Format(time.RFC3339)))
+	tokenextelemetry.RecordResult(span, nil)
+
+	return tok, nil
 }

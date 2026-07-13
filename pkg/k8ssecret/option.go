@@ -3,7 +3,11 @@
 
 package k8ssecret
 
-import "go.riptides.io/tokenex/pkg/option"
+import (
+	"go.opentelemetry.io/otel/trace"
+
+	"go.riptides.io/tokenex/pkg/option"
+)
 
 // Option is a function that modifies the credentialsConfig.
 type (
@@ -37,5 +41,13 @@ func isCredentialsOption(opt any) (CredentialsOption, bool) {
 func WithSecretRef(sr SecretRef) option.Option {
 	return withCredentialsOption(func(c *credentialsConfig) {
 		c.secretRef = sr
+	})
+}
+
+// WithTracerProvider sets the OTel TracerProvider used to emit credential.fetch spans.
+// If not set, the tracer falls back to the current span's TracerProvider (if any), then the OTel global TracerProvider.
+func WithTracerProvider(tracerProvider trace.TracerProvider) option.Option {
+	return withCredentialsOption(func(c *credentialsConfig) {
+		c.tracerProvider = tracerProvider
 	})
 }

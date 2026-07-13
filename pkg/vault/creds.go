@@ -10,11 +10,15 @@ import (
 	"emperror.dev/errors"
 	"github.com/go-logr/logr"
 	"github.com/go-viper/mapstructure/v2"
+	"github.com/google/uuid"
 	jwtauth "github.com/openbao/openbao/api/auth/jwt/v2"
 	"github.com/openbao/openbao/api/v2"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
+	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
 	"go.riptides.io/tokenex/pkg/token"
 	"go.riptides.io/tokenex/pkg/util"
 )
@@ -96,6 +100,8 @@ type credentialsConfig struct {
 	pollInterval          time.Duration
 	reqData               map[string][]string
 	identityTokenProvider token.IdentityTokenProvider
+
+	tracerProvider trace.TracerProvider
 
 	gcp   *gcpCredentialConfig
 	azure *azureCredentialConfig
@@ -216,6 +222,8 @@ func (cp *credentialsProvider) authenticate(ctx context.Context, cfg *credential
 		return errors.WrapIf(err, "failed to get ID token")
 	}
 
+	trace.SpanFromContext(ctx).SetAttributes(tokenextelemetry.IdentityTokenAttrs("id_token", idToken.Token, idToken.ExpiresAt)...)
+
 	// Authenticate with Vault using JWT
 	err = cp.authenticateWithJWT(ctx, idToken, cfg.jwtAuthMethodPath, cfg.jwtAuthRoleName)
 	if err != nil {
@@ -281,8 +289,27 @@ func (cp *credentialsProvider) retrieveCredentials(ctx context.Context, cfg *cre
 	}, nil
 }
 
+func fetchCredentials(ctx context.Context, tracer trace.Tracer, configAttrs []attribute.KeyValue, cp *credentialsProvider, cfg *credentialsConfig) (*credentialData, trace.SpanContext, error) {
+	ctx, span := tracer.Start(ctx, fetchSpanName, trace.WithAttributes(configAttrs...))
+	defer span.End()
+	sc := span.SpanContext()
+
+	creds, err := cp.retrieveCredentials(ctx, cfg)
+	if err != nil {
+		err = errors.WrapIfWithDetails(err, "failed to retrieve secret", "secret_path", cfg.secretFullPath)
+		tokenextelemetry.RecordResult(span, err)
+
+		return nil, sc, err
+	}
+
+	span.SetAttributes(fetchSpanResultAttrs(creds)...)
+	tokenextelemetry.RecordResult(span, nil)
+
+	return creds, sc, nil
+}
+
 // startGcpAccessTokenProvider starts a worker goroutine that exchanges a GCP service account key for an access token and refreshes it as needed until the context is canceled.
-func (cp *credentialsProvider) startGcpAccessTokenProvider(ctx context.Context, secretData map[string]any, scopes []string) (<-chan credential.Result, error) {
+func (cp *credentialsProvider) startGcpAccessTokenProvider(ctx context.Context, tracer trace.Tracer, parentSpanContext trace.SpanContext, secretData map[string]any, scopes []string) (<-chan credential.Result, error) {
 	var serviceAccountKeySecret gcpServiceAccountKeySecret
 	if err := mapstructure.Decode(secretData, &serviceAccountKeySecret); err != nil {
 		return nil, errors.WrapIf(err, "failed to decode Vault secret data into GCP service account key credentials structure")
@@ -300,20 +327,21 @@ func (cp *credentialsProvider) startGcpAccessTokenProvider(ctx context.Context, 
 	provider := gcpAccessTokenProvider{
 		serviceAccountKeyJSON: keyJSON,
 		scopes:                scopes,
+		tracer:                tracer,
 		logger:                logr.FromContextOrDiscard(ctx).WithName("gcp_access_token_provider"),
 	}
 
 	credsChan := make(chan credential.Result, 1)
 	go func() {
 		defer close(credsChan)
-		provider.GetCredentials(ctx, credsChan)
+		provider.GetCredentials(ctx, parentSpanContext, credsChan)
 	}()
 
 	return credsChan, nil
 }
 
 // startAzureAccessTokenProvider starts a worker goroutine that exchanges Azure credentials for an access token and refreshes it as needed until the context is canceled.
-func (cp *credentialsProvider) startAzureAccessTokenProvider(ctx context.Context, secretData map[string]any, tenantID string, scopes []string) (<-chan credential.Result, error) {
+func (cp *credentialsProvider) startAzureAccessTokenProvider(ctx context.Context, tracer trace.Tracer, parentSpanContext trace.SpanContext, secretData map[string]any, tenantID string, scopes []string) (<-chan credential.Result, error) {
 	var azureSecret vaultAzureSecret
 
 	if err := mapstructure.Decode(secretData, &azureSecret); err != nil {
@@ -329,13 +357,14 @@ func (cp *credentialsProvider) startAzureAccessTokenProvider(ctx context.Context
 		clientID:     azureSecret.ClientID,
 		clientSecret: azureSecret.ClientSecret,
 		scopes:       scopes,
+		tracer:       tracer,
 		logger:       logr.FromContextOrDiscard(ctx).WithName("azure_access_token_provider"),
 	}
 
 	credsChan := make(chan credential.Result, 1)
 	go func() {
 		defer close(credsChan)
-		provider.GetCredentials(ctx, credsChan)
+		provider.GetCredentials(ctx, parentSpanContext, credsChan)
 	}()
 
 	return credsChan, nil
@@ -346,12 +375,12 @@ func shouldStartWorker(cfg *credentialsConfig) bool {
 	return cfg.gcp.ExchangeSAKeyForAccessToken() || cfg.azure.ExchangeForAccessToken()
 }
 
-func (cp *credentialsProvider) startWorker(ctx context.Context, cfg *credentialsConfig, credsData map[string]any) (<-chan credential.Result, context.CancelFunc, error) {
+func (cp *credentialsProvider) startWorker(ctx context.Context, tracer trace.Tracer, parentSpanContext trace.SpanContext, cfg *credentialsConfig, credsData map[string]any) (<-chan credential.Result, context.CancelFunc, error) {
 	if cfg.gcp.ExchangeSAKeyForAccessToken() {
 		// get access token using the service account key data in the Vault secret
 		// and send the access token through the channel instead of the raw service account key data
 		ctx, cancel := context.WithCancel(ctx)
-		credsChan, err := cp.startGcpAccessTokenProvider(ctx, credsData, cfg.gcp.accessTokenScopes)
+		credsChan, err := cp.startGcpAccessTokenProvider(ctx, tracer, parentSpanContext, credsData, cfg.gcp.accessTokenScopes)
 		if err != nil {
 			return nil, cancel, errors.WrapIf(err, "failed to start GCP access token provider")
 		}
@@ -362,7 +391,7 @@ func (cp *credentialsProvider) startWorker(ctx context.Context, cfg *credentials
 	if cfg.azure.ExchangeForAccessToken() {
 		// get access token using the client ID and client secret data in the Vault secret
 		ctx, cancel := context.WithCancel(ctx)
-		credsChan, err := cp.startAzureAccessTokenProvider(ctx, credsData, cfg.azure.TenantID(), cfg.azure.AccessTokenScopes())
+		credsChan, err := cp.startAzureAccessTokenProvider(ctx, tracer, parentSpanContext, credsData, cfg.azure.TenantID(), cfg.azure.AccessTokenScopes())
 		if err != nil {
 			return nil, cancel, errors.WrapIf(err, "failed to start Azure access token provider")
 		}
@@ -375,6 +404,10 @@ func (cp *credentialsProvider) startWorker(ctx context.Context, cfg *credentials
 
 // refreshCredentialsLoop handles the credential retrieval and refresh loop.
 func (cp *credentialsProvider) refreshCredentialsLoop(ctx context.Context, cfg *credentialsConfig, credsChan chan credential.Result) {
+	tracer := tokenextelemetry.Tracer(ctx, cfg.tracerProvider, instrumentationScopeName)
+	correlationID := uuid.NewString()
+	configAttrs := fetchSpanConfigAttrs(cfg, cp.client.Address(), correlationID)
+
 	var cancelWorker context.CancelFunc
 	var workerChan <-chan credential.Result
 
@@ -396,9 +429,9 @@ func (cp *credentialsProvider) refreshCredentialsLoop(ctx context.Context, cfg *
 			}
 
 			// Retrieve the secret
-			creds, err := cp.retrieveCredentials(ctx, cfg)
+			creds, sc, err := fetchCredentials(ctx, tracer, configAttrs, cp, cfg)
 			if err != nil {
-				util.SendErrorToChannel(credsChan, errors.WrapIfWithDetails(err, "failed to retrieve secret", "secret_path", cfg.secretFullPath))
+				util.SendErrorToChannel(credsChan, err)
 
 				return
 			}
@@ -414,7 +447,7 @@ func (cp *credentialsProvider) refreshCredentialsLoop(ctx context.Context, cfg *
 			}
 
 			if shouldStartWorker(cfg) {
-				workerChan, cancelWorker, err = cp.startWorker(logr.NewContext(ctx, logger), cfg, creds.Data)
+				workerChan, cancelWorker, err = cp.startWorker(logr.NewContext(ctx, logger), tracer, sc, cfg, creds.Data)
 				if err != nil {
 					util.SendErrorToChannel(credsChan, errors.WrapIf(err, "failed to start credential worker"))
 

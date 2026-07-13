@@ -13,9 +13,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/go-logr/logr"
+	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
+	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
 	"go.riptides.io/tokenex/pkg/token"
 	"go.riptides.io/tokenex/pkg/util"
 )
@@ -26,6 +30,8 @@ type credentialsConfig struct {
 	roleSessionName       string
 	durationSeconds       *int32
 	identityTokenProvider token.IdentityTokenProvider
+
+	tracerProvider trace.TracerProvider
 }
 
 // CredentialsProvider defines the interface for obtaining AWS credentials.
@@ -72,13 +78,61 @@ type Provider interface {
 
 func (cp *credentialsProvider) isAWS() {}
 
+func fetchCredentials(ctx context.Context, tracer trace.Tracer, configAttrs []attribute.KeyValue, provider *stscreds.WebIdentityRoleProvider, retriever *tokenRetriever) (aws.Credentials, error) {
+	fetchCtx, span := tracer.Start(ctx, fetchSpanName, trace.WithAttributes(configAttrs...))
+	defer span.End()
+
+	// we need to store current ctx as provider.Retrieve(fetchCtx) invoked bellow
+	// doesn't pass the fetch to TokenRetriever.GetIdentityToken()
+	retriever.ctx.Store(fetchCtx)
+
+	awsCreds, err := provider.Retrieve(fetchCtx)
+	if err != nil {
+		err = errors.WrapIf(err, "failed to retrieve credentials")
+		tokenextelemetry.RecordResult(span, err)
+
+		return aws.Credentials{}, err
+	}
+
+	span.SetAttributes(fetchSpanResultAttrs(awsCreds)...)
+	tokenextelemetry.RecordResult(span, nil)
+
+	return awsCreds, nil
+}
+
 // refreshCredentialsLoop handles the credential retrieval and refresh loop.
-func (cp *credentialsProvider) refreshCredentialsLoop(ctx context.Context, provider *stscreds.WebIdentityRoleProvider, credsChan chan credential.Result) {
+func (cp *credentialsProvider) refreshCredentialsLoop(ctx context.Context, cfg *credentialsConfig, credsChan chan credential.Result) {
+	tracer := tokenextelemetry.Tracer(ctx, cfg.tracerProvider, instrumentationScopeName)
+
+	// Create WebIdentityRoleProvider options
+	providerOpts := []func(*stscreds.WebIdentityRoleOptions){
+		func(o *stscreds.WebIdentityRoleOptions) {
+			o.RoleSessionName = cfg.roleSessionName
+			if cfg.durationSeconds != nil {
+				o.Duration = time.Duration(*cfg.durationSeconds) * time.Second
+			}
+		},
+	}
+
+	// Create the WebIdentityRoleProvider
+	retriever := &tokenRetriever{
+		provider: cfg.identityTokenProvider,
+	}
+
+	provider := stscreds.NewWebIdentityRoleProvider(
+		cp.stsClient,
+		cfg.roleArn,
+		retriever,
+		providerOpts...,
+	)
+
+	correlationID := uuid.NewString()
+	configAttrs := fetchSpanConfigAttrs(cfg, cp.stsClient.Options().Region, correlationID)
+
 	for {
-		// Get credentials
-		awsCreds, err := provider.Retrieve(ctx)
+		awsCreds, err := fetchCredentials(ctx, tracer, configAttrs, provider, retriever)
 		if err != nil {
-			util.SendErrorToChannel(credsChan, errors.WrapIf(err, "failed to retrieve credentials"))
+			util.SendErrorToChannel(credsChan, err)
 
 			return
 		}
@@ -210,29 +264,11 @@ func (cp *credentialsProvider) GetCredentials(ctx context.Context, tokenProvider
 		return nil, errors.WrapIf(err, "failed to get initial ID token")
 	}
 
-	// Create WebIdentityRoleProvider options
-	providerOpts := []func(*stscreds.WebIdentityRoleOptions){
-		func(o *stscreds.WebIdentityRoleOptions) {
-			o.RoleSessionName = cfg.roleSessionName
-			if cfg.durationSeconds != nil {
-				o.Duration = time.Duration(*cfg.durationSeconds) * time.Second
-			}
-		},
-	}
-
-	// Create the WebIdentityRoleProvider
-	provider := stscreds.NewWebIdentityRoleProvider(
-		cp.stsClient,
-		cfg.roleArn,
-		&tokenRetriever{provider: tokenProvider, ctx: ctx},
-		providerOpts...,
-	)
-
 	credsChan := make(chan credential.Result, 1)
 
 	go func() {
 		defer close(credsChan)
-		cp.refreshCredentialsLoop(ctx, provider, credsChan)
+		cp.refreshCredentialsLoop(ctx, cfg, credsChan)
 	}()
 
 	return credsChan, nil

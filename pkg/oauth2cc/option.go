@@ -4,6 +4,7 @@
 package oauth2cc
 
 import (
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2"
 
 	"go.riptides.io/tokenex/pkg/option"
@@ -77,5 +78,13 @@ func WithAdditionalParams(params map[string][]string) option.Option {
 func WithAuthStyle(authStyle oauth2.AuthStyle) option.Option {
 	return withCredentialsOption(func(c *credentialsConfig) {
 		c.authStyle = authStyle
+	})
+}
+
+// WithTracerProvider sets the OTel TracerProvider used to emit credential.fetch spans.
+// If not set, the tracer falls back to the current span's TracerProvider (if any), then the OTel global TracerProvider.
+func WithTracerProvider(tracerProvider trace.TracerProvider) option.Option {
+	return withCredentialsOption(func(c *credentialsConfig) {
+		c.tracerProvider = tracerProvider
 	})
 }

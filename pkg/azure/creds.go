@@ -8,12 +8,17 @@ import (
 	"time"
 
 	"emperror.dev/errors"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/go-logr/logr"
+	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
+	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
 	"go.riptides.io/tokenex/pkg/token"
 	"go.riptides.io/tokenex/pkg/util"
 )
@@ -24,6 +29,8 @@ type credentialsConfig struct {
 	clientID              string
 	scope                 string
 	identityTokenProvider token.IdentityTokenProvider
+
+	tracerProvider trace.TracerProvider
 }
 
 // CredentialsProvider defines the interface for obtaining Azure credentials.
@@ -73,6 +80,27 @@ type Provider interface {
 
 func (cp *credentialsProvider) isAzure() {}
 
+func fetchCredentials(ctx context.Context, tracer trace.Tracer, configAttrs []attribute.KeyValue, cred *azidentity.ClientAssertionCredential, cfg *credentialsConfig) (azcore.AccessToken, error) {
+	fetchCtx, span := tracer.Start(ctx, fetchSpanName, trace.WithAttributes(configAttrs...))
+	defer span.End()
+
+	tok, err := cred.GetToken(fetchCtx, policy.TokenRequestOptions{
+		TenantID: cfg.tenantID,
+		Scopes:   []string{cfg.scope},
+	})
+	if err != nil {
+		err = errors.WrapIf(err, "failed to retrieve credentials")
+		tokenextelemetry.RecordResult(span, err)
+
+		return azcore.AccessToken{}, err
+	}
+
+	span.SetAttributes(fetchSpanResultAttrs(tok)...)
+	tokenextelemetry.RecordResult(span, nil)
+
+	return tok, nil
+}
+
 // refreshCredentialsLoop handles the credential retrieval and refresh loop.
 func (cp *credentialsProvider) refreshCredentialsLoop(
 	ctx context.Context,
@@ -80,48 +108,49 @@ func (cp *credentialsProvider) refreshCredentialsLoop(
 	cred *azidentity.ClientAssertionCredential,
 	credsChan chan credential.Result,
 ) {
+	tracer := tokenextelemetry.Tracer(ctx, cfg.tracerProvider, instrumentationScopeName)
+	correlationID := uuid.NewString()
+	configAttrs := fetchSpanConfigAttrs(cfg, correlationID)
+
 	for {
-		token, err := cred.GetToken(ctx, policy.TokenRequestOptions{
-			TenantID: cfg.tenantID,
-			Scopes:   []string{cfg.scope},
-		})
+		tok, err := fetchCredentials(ctx, tracer, configAttrs, cred, cfg)
 		if err != nil {
-			util.SendErrorToChannel(credsChan, errors.WrapIf(err, "failed to retrieve credentials"))
+			util.SendErrorToChannel(credsChan, err)
 
 			return
 		}
 
 		// Calculate when to refresh
-		timeUntilExpiry := time.Until(token.ExpiresOn)
+		timeUntilExpiry := time.Until(tok.ExpiresOn)
 
 		// If credentials are already expired, this is an error
 		if timeUntilExpiry <= 0 {
-			util.SendErrorToChannel(credsChan, errors.NewWithDetails("received already expired credentials", "expiresAt", token.ExpiresOn))
+			util.SendErrorToChannel(credsChan, errors.NewWithDetails("received already expired credentials", "expiresAt", tok.ExpiresOn))
 
 			return
 		}
 
 		// Send credentials
 		azureCredential := &credential.Oauth2Creds{
-			AccessToken: token.Token,
+			AccessToken: tok.Token,
 			TokenType:   "Bearer",
-			Expiry:      token.ExpiresOn,
+			Expiry:      tok.ExpiresOn,
 		}
 		util.SendToChannel(credsChan, credential.Result{
 			Credential: azureCredential,
 			Err:        nil,
 			Event:      credential.UpdateEventType,
 		})
-		cp.logger.V(2).Info("Sent credentials", "expires", token.ExpiresOn)
+		cp.logger.V(2).Info("Sent credentials", "expires", tok.ExpiresOn)
 
 		refreshBuffer := util.CalculateRefreshBuffer(timeUntilExpiry)
 		refreshTime := timeUntilExpiry - refreshBuffer
 
-		if !token.RefreshOn.IsZero() {
+		if !tok.RefreshOn.IsZero() {
 			// if refresh time is recommended in the received token, use that
-			cp.logger.V(2).Info("Using RefreshOn time from token", "refreshOn", token.RefreshOn)
+			cp.logger.V(2).Info("Using RefreshOn time from token", "refreshOn", tok.RefreshOn)
 
-			rt := time.Until(token.RefreshOn)
+			rt := time.Until(tok.RefreshOn)
 			if rt > 0 {
 				refreshTime = rt
 			} else {
@@ -217,12 +246,14 @@ func (cp *credentialsProvider) GetCredentials(
 		cfg.tenantID,
 		cfg.clientID,
 		func(ctx context.Context) (string, error) {
-			t, err := tokenProvider.GetToken(ctx)
+			idToken, err := tokenProvider.GetToken(ctx)
 			if err != nil {
 				return "", err
 			}
 
-			return t.Token, nil
+			trace.SpanFromContext(ctx).SetAttributes(tokenextelemetry.IdentityTokenAttrs("id_token", idToken.Token, idToken.ExpiresAt)...)
+
+			return idToken.Token, nil
 		},
 		nil,
 	)

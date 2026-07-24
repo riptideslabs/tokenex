@@ -288,7 +288,8 @@ func (cp *credentialsProvider) Start(ctx context.Context) (<-chan StatusEvent, e
 }
 
 func (cp *credentialsProvider) Authorize(ctx context.Context, authState, code string) (*oauth2.Token, error) {
-	if !cp.reauthorizeIfAuthorized && cp.syncGate.IsOpen() {
+	wasAuthorized := cp.syncGate.IsOpen()
+	if !cp.reauthorizeIfAuthorized && wasAuthorized {
 		return nil, errors.WithStack(ErrAlreadyAuthorized)
 	}
 
@@ -315,7 +316,7 @@ func (cp *credentialsProvider) Authorize(ctx context.Context, authState, code st
 	cp.authorizeSpanContext = sc
 	cp.mu.Unlock()
 
-	if cp.syncGate.IsOpen() {
+	if wasAuthorized {
 		cp.signalRefresh()
 	}
 

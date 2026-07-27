@@ -82,7 +82,7 @@ func fetchCredentials(ctx context.Context, tracer trace.Tracer, configAttrs []at
 	fetchCtx, span := tracer.Start(ctx, fetchSpanName, trace.WithAttributes(configAttrs...))
 	defer span.End()
 
-	// we need to store current ctx as provider.Retrieve(fetchCtx) invoked bellow
+	// we need to store current ctx as provider.Retrieve(fetchCtx) invoked below
 	// doesn't pass the fetch to TokenRetriever.GetIdentityToken()
 	retriever.ctx.Store(fetchCtx)
 

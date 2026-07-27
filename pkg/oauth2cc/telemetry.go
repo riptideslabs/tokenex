@@ -36,8 +36,12 @@ func fetchSpanConfigAttrs(cfg *credentialsConfig, clientID string, correlationID
 }
 
 func fetchSpanResultAttrs(tok *oauth2.Token) []attribute.KeyValue {
-	return []attribute.KeyValue{
-		attribute.Bool("credential.expires", true),
-		attribute.String("credential.expires_at", tok.Expiry.UTC().Format(time.RFC3339)),
+	attrs := []attribute.KeyValue{
+		attribute.Bool("credential.expires", !tok.Expiry.IsZero()),
 	}
+	if !tok.Expiry.IsZero() {
+		attrs = append(attrs, attribute.String("credential.expires_at", tok.Expiry.UTC().Format(time.RFC3339)))
+	}
+
+	return attrs
 }

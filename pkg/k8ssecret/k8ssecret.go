@@ -159,8 +159,7 @@ func (cp *credentialsProvider) getCredentials(ctx context.Context, cfg *credenti
 		return credsChan, errors.WithStack(ErrInformerSync)
 	}
 
-	// do initial check of the specified secret
-	if err := cp.initialValidation(ctx, cfg.secretRef); err != nil {
+	if err := cp.validateSecretExists(ctx, cfg.secretRef); err != nil {
 		cp.publishFetch(ctx, tracer, configAttrs, credsChan, nil, err)
 	}
 
@@ -177,20 +176,13 @@ func (cp *credentialsProvider) getCredentials(ctx context.Context, cfg *credenti
 	return credsChan, nil
 }
 
-func (cp *credentialsProvider) initialValidation(ctx context.Context, secretRef SecretRef) error {
+func (cp *credentialsProvider) validateSecretExists(ctx context.Context, secretRef SecretRef) error {
 	secret := &corev1.Secret{}
-	if err := cp.cache.Get(ctx, client.ObjectKey{
+
+	return cp.cache.Get(ctx, client.ObjectKey{
 		Name:      secretRef.Name,
 		Namespace: secretRef.Namespace,
-	}, secret); err != nil {
-		return err
-	}
-
-	if _, ok := secret.Data["token"]; !ok {
-		return ErrMissingData
-	}
-
-	return nil
+	}, secret)
 }
 
 func (cp *credentialsProvider) publishFetch(ctx context.Context, tracer trace.Tracer, configAttrs []attribute.KeyValue, credsChan chan Credential, tok *credential.Token, fetchErr error) {

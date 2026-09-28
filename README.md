@@ -25,6 +25,7 @@ This library provides a unified interface for obtaining and refreshing credentia
     * [OAuth2 Authorization Code](#oauth2-authorization-code-flow-provider)
     * [OAuth2 Client Credentials](#oauth2-client-credentials-flow-provider)
     * [Vault Provider](#vault-credentials-provider)
+    * [Conjur Provider](#conjur-credentials-provider)
     * [GitHub App Provider](#github-app-credentials-provider)
 * [Channel Behavior](#channel-behavior)
 * [License](#license)
@@ -43,6 +44,7 @@ This library provides a unified interface for obtaining and refreshing credentia
 - **OAuth2AC:** Obtains access tokens through OAuth2 authorization code flow and refreshes them before expiration
 - **OAuth2CC:** Obtains access tokens through OAuth2 client credentials flow and refreshes them before expiration
 - **Vault** Exchanges ID tokens for secrets from Vault using Vault's JWT authentication.
+- **Conjur:** Exchanges ID tokens for secrets from CyberArk Conjur (Secrets Manager Self-Hosted and SaaS) using Conjur's JWT authenticator, and polls for rotated values.
 - **GitHub App:** Mints GitHub App installation access tokens by signing a JWT with the App's private key and refreshes them before expiration.
 
 ## Installation
@@ -745,6 +747,51 @@ go func() {
 // In a real application, you would wait for all goroutines to complete before exiting
 // wg.Wait()
 ```
+
+### Conjur Credentials Provider
+
+Configure a [JWT authenticator](https://docs.cyberark.com/secrets-manager-sh/latest/en/content/operations/services/cjr-authn-jwt.htm) in Conjur that trusts your identity token issuer (`jwks-uri` or `provider-uri`, `issuer`, `audience`), then read variables with it. All variables are read in one batch request and published as a `*credential.Secret` under the keys you choose.
+
+```go
+import (
+    "go.riptides.io/tokenex/pkg/conjur"
+    "go.riptides.io/tokenex/pkg/credential"
+)
+
+// tlsConfig may be nil; set RootCAs when Conjur's certificate is issued by a private CA.
+// For Secrets Manager SaaS, use "https://<subdomain>.secretsmgr.cyberark.cloud/api" and account "conjur".
+conjurProvider, err := conjur.NewCredentialsProvider(ctx, logger, "https://conjur.example.com", tlsConfig)
+if err != nil {
+    return err
+}
+
+credsChan, err := conjurProvider.GetCredentials(
+    ctx,
+    idTokenProvider,
+    conjur.WithAccount("myorg"),
+    conjur.WithServiceID("riptides"), // authn-jwt/<service-id>
+    conjur.WithVariables(map[string]string{
+        "username": "prod/db/username",
+        "password": "prod/db/password",
+    }),
+    // Only needed when the authenticator has no token-app-property:
+    // conjur.WithHostID("apps/myapp"),
+)
+if err != nil {
+    return err
+}
+
+for creds := range credsChan {
+    if creds.Err != nil {
+        return creds.Err
+    }
+
+    secret := creds.Credential.(*credential.Secret)
+    logger.Info("Database username", "value", secret.Data["username"])
+}
+```
+
+Conjur variables have no lease, so the provider reads them again every 15 minutes by default (`conjur.WithPollInterval`).
 
 ### GitHub App Credentials Provider
 

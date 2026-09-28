@@ -70,8 +70,12 @@ type Token struct {
 
 func (*Token) isResultType() {}
 
-type VaultSecret struct {
+// Secret holds named secret values read from a secrets manager such as Vault or Conjur.
+type Secret struct {
 	Data map[string]any
 }
 
-func (*VaultSecret) isResultType() {}
+func (*Secret) isResultType() {}
+
+// VaultSecret is the Secret returned by the Vault provider.
+type VaultSecret = Secret

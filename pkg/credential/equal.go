@@ -19,8 +19,8 @@ func Equal(a, b Credential) bool {
 		b, ok := b.(*Token)
 
 		return ok && a.IsEqual(b)
-	case *VaultSecret:
-		b, ok := b.(*VaultSecret)
+	case *Secret:
+		b, ok := b.(*Secret)
 
 		return ok && a.IsEqual(b)
 	default:
@@ -88,6 +88,6 @@ func (a *AWSCreds) IsEqual(b *AWSCreds) bool {
 	return true
 }
 
-func (a *VaultSecret) IsEqual(b *VaultSecret) bool {
+func (a *Secret) IsEqual(b *Secret) bool {
 	return reflect.DeepEqual(a.Data, b.Data)
 }

@@ -66,6 +66,7 @@ func WithHostID(hostID string) option.Option {
 
 // WithVariables sets the Conjur variables to retrieve, keyed by the name each value gets in the
 // returned Secret. For example {"username": "prod/db/username", "password": "prod/db/password"}.
+// Use plain variable IDs, not the fully qualified <account>:variable:<id> form.
 // This option is required. All variables are read in one batch request, so a rotated pair is
 // never returned half updated.
 func WithVariables(variables map[string]string) option.Option {

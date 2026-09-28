@@ -392,7 +392,7 @@ func (cp *credentialsProvider) GetCredentials(ctx context.Context, tokenProvider
 	}
 
 	if t.ExpiresAt.Before(time.Now()) {
-		return nil, errors.NewWithDetails("initial ID token is already expired", "expiry", t.ExpiresAt)
+		return nil, errors.NewWithDetails("initial ID token is expired or has no expiry", "expiry", t.ExpiresAt)
 	}
 
 	credsChan := make(chan credential.Result, 1)

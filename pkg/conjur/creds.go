@@ -34,14 +34,6 @@ import (
 	"go.riptides.io/tokenex/pkg/util"
 )
 
-const (
-	// maxResponseSize bounds how much of a Conjur response body is read.
-	maxResponseSize = 16 << 20
-
-	// maxErrorMessageLength bounds how much of a non-JSON error body ends up in an error.
-	maxErrorMessageLength = 256
-)
-
 // CredentialsProvider defines the interface for obtaining secrets from Conjur.
 type CredentialsProvider interface {
 	// GetCredentials exchanges an ID token for a Conjur access token and retrieves the configured variables.
@@ -83,12 +75,12 @@ func setDefaults(cfg *credentialsConfig) {
 }
 
 func validateConfig(cfg *credentialsConfig) error {
-	if err := validatePathSegment("account", cfg.account); err != nil {
-		return err
+	if cfg.account == "" {
+		return errors.New("account is required")
 	}
 
-	if err := validatePathSegment("service ID", cfg.serviceID); err != nil {
-		return err
+	if cfg.serviceID == "" {
+		return errors.New("service ID is required")
 	}
 
 	if len(cfg.variables) == 0 {
@@ -121,19 +113,6 @@ func validateConfig(cfg *credentialsConfig) error {
 	return nil
 }
 
-// validatePathSegment rejects values that would not address a single URL path segment.
-func validatePathSegment(name string, value string) error {
-	if value == "" {
-		return errors.Errorf("%s is required", name)
-	}
-
-	if value == "." || value == ".." {
-		return errors.Errorf("%s must not be %q", name, value)
-	}
-
-	return nil
-}
-
 // hostLogin returns the Conjur login of a host, which carries a "host/" prefix.
 func hostLogin(hostID string) string {
 	if strings.HasPrefix(hostID, "host/") {
@@ -149,56 +128,6 @@ func variableIDs(variables map[string]string) []string {
 	slices.Sort(ids)
 
 	return slices.Compact(ids)
-}
-
-// do sends req and returns the response body and headers. A non-2xx status is returned as an
-// error carrying Conjur's error message.
-func (cp *credentialsProvider) do(req *http.Request) ([]byte, http.Header, error) {
-	resp, err := cp.httpClient.Do(req)
-	if err != nil {
-		return nil, nil, errors.WrapIf(err, "request failed")
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
-	if err != nil {
-		return nil, nil, errors.WrapIf(err, "failed to read response body")
-	}
-
-	if len(body) > maxResponseSize {
-		return nil, nil, errors.Errorf("response body exceeds %d bytes", maxResponseSize)
-	}
-
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		if msg := errorMessage(body); msg != "" {
-			return nil, nil, errors.Errorf("unexpected status %s: %s", resp.Status, msg)
-		}
-
-		return nil, nil, errors.Errorf("unexpected status %s", resp.Status)
-	}
-
-	return body, resp.Header, nil
-}
-
-// errorMessage extracts the message of a Conjur error response ({"error":{"code":...,"message":...}}),
-// falling back to the start of the raw body.
-func errorMessage(body []byte) string {
-	var resp struct {
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-
-	if json.Unmarshal(body, &resp) == nil && resp.Error.Message != "" {
-		return resp.Error.Message
-	}
-
-	msg := strings.TrimSpace(string(body))
-	if len(msg) > maxErrorMessageLength {
-		msg = msg[:maxErrorMessageLength]
-	}
-
-	return msg
 }
 
 // authenticate exchanges an ID token for a Conjur access token using the JWT authenticator.
@@ -225,9 +154,20 @@ func (cp *credentialsProvider) authenticate(ctx context.Context, cfg *credential
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	accessToken, _, err := cp.do(req)
+	resp, err := cp.httpClient.Do(req)
 	if err != nil {
-		return "", errors.WrapIfWithDetails(err, "failed to authenticate with Conjur", "service_id", cfg.serviceID, "account", cfg.account)
+		return "", errors.WrapIf(err, "authentication request failed")
+	}
+
+	defer resp.Body.Close()
+
+	accessToken, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", errors.WrapIf(err, "could not read authentication response body")
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", errors.Errorf("failed to authenticate with Conjur, status %d: %s", resp.StatusCode, accessToken)
 	}
 
 	if len(accessToken) == 0 {
@@ -257,9 +197,20 @@ func (cp *credentialsProvider) retrieveVariables(ctx context.Context, cfg *crede
 	// Ask for base64 encoded values so binary secrets survive the JSON response.
 	req.Header.Set("Accept-Encoding", "base64")
 
-	body, header, err := cp.do(req)
+	resp, err := cp.httpClient.Do(req)
 	if err != nil {
-		return nil, errors.WrapIfWithDetails(err, "failed to retrieve variables", "variable_ids", ids)
+		return nil, errors.WrapIf(err, "secrets request failed")
+	}
+
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, errors.WrapIf(err, "could not read secrets response body")
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, errors.Errorf("failed to retrieve variables, status %d: %s", resp.StatusCode, body)
 	}
 
 	var byFullID map[string]string
@@ -268,7 +219,7 @@ func (cp *credentialsProvider) retrieveVariables(ctx context.Context, cfg *crede
 	}
 
 	// Conjur versions without base64 support ignore Accept-Encoding and return the values as they are.
-	decode := header.Get("Content-Encoding") == "base64"
+	decode := resp.Header.Get("Content-Encoding") == "base64"
 
 	values := make(map[string]string, len(ids))
 	for i, id := range ids {

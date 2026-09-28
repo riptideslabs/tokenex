@@ -361,7 +361,6 @@ func TestValidateConfig(t *testing.T) {
 	}{
 		{name: "valid", mutate: func(*credentialsConfig) {}},
 		{name: "missing account", mutate: func(c *credentialsConfig) { c.account = "" }, wantErr: "account is required"},
-		{name: "dot-dot account", mutate: func(c *credentialsConfig) { c.account = ".." }, wantErr: "account must not be"},
 		{name: "missing service ID", mutate: func(c *credentialsConfig) { c.serviceID = "" }, wantErr: "service ID is required"},
 		{name: "no variables", mutate: func(c *credentialsConfig) { c.variables = nil }, wantErr: "at least one variable"},
 		{name: "empty key", mutate: func(c *credentialsConfig) { c.variables = map[string]string{"": passwordID} }, wantErr: "key must not be empty"},

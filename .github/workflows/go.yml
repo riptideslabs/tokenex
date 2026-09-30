@@ -33,3 +33,6 @@ jobs:
 
       - name: Build
         run: go build -v ./...
+
+      - name: Test
+        run: go test -race -count=1 ./...

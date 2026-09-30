@@ -6,6 +6,7 @@ package token
 import (
 	"context"
 	"sync"
+	"time"
 
 	"emperror.dev/errors"
 	"github.com/golang-jwt/jwt/v5"
@@ -52,9 +53,15 @@ func (s *StaticIdentityTokenProvider) GetToken(ctx context.Context, opts ...opti
 		return credential.Token{}, errors.WrapIf(err, "failed to get token expiration time")
 	}
 
+	// exp is optional; a zero ExpiresAt means the token never expires.
+	var expiresAt time.Time
+	if exp != nil {
+		expiresAt = exp.Time
+	}
+
 	return credential.Token{
 		Token:     t.Raw,
-		ExpiresAt: exp.Time,
+		ExpiresAt: expiresAt,
 	}, nil
 }
 

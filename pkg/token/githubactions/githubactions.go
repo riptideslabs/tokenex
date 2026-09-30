@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"time"
 
 	"emperror.dev/errors"
 	"github.com/golang-jwt/jwt/v5"
@@ -26,9 +25,6 @@ import (
 const (
 	requestURLEnvVar   = "ACTIONS_ID_TOKEN_REQUEST_URL"
 	requestTokenEnvVar = "ACTIONS_ID_TOKEN_REQUEST_TOKEN"
-
-	// minValidity is how long a cached token must remain valid to be returned instead of fetching a new one.
-	minValidity = time.Minute
 )
 
 type providerConfig struct {
@@ -38,15 +34,11 @@ type providerConfig struct {
 	httpClient   *http.Client
 }
 
-// IdentityTokenProvider fetches GitHub Actions OIDC ID tokens and caches them until shortly before they expire.
+// IdentityTokenProvider fetches GitHub Actions OIDC ID tokens.
 type IdentityTokenProvider struct {
 	requestURL   string
 	requestToken string
 	httpClient   *http.Client
-
-	// lock serializes fetches. It is a channel rather than a mutex so waiting callers can honor ctx cancellation.
-	lock  chan struct{}
-	token credential.Token
 }
 
 var _ token.IdentityTokenProvider = (*IdentityTokenProvider)(nil)
@@ -95,39 +87,16 @@ func NewIdentityTokenProvider(opts ...option.Option) (*IdentityTokenProvider, er
 		requestURL:   u.String(),
 		requestToken: cfg.requestToken,
 		httpClient:   httpClient,
-		lock:         make(chan struct{}, 1),
 	}, nil
-}
-
-// GetToken returns the cached ID token, fetching a new one if it is missing or about to expire.
-func (p *IdentityTokenProvider) GetToken(ctx context.Context, _ ...option.Option) (credential.Token, error) {
-	select {
-	case p.lock <- struct{}{}:
-	case <-ctx.Done():
-		return credential.Token{}, errors.WithStackIf(ctx.Err())
-	}
-
-	defer func() { <-p.lock }()
-
-	if p.token.Token != "" && time.Until(p.token.ExpiresAt) > minValidity {
-		return p.token, nil
-	}
-
-	tok, err := p.fetchToken(ctx)
-	if err != nil {
-		return credential.Token{}, err
-	}
-
-	p.token = tok
-
-	return tok, nil
 }
 
 type tokenResponse struct {
 	Value string `json:"value"`
 }
 
-func (p *IdentityTokenProvider) fetchToken(ctx context.Context) (credential.Token, error) {
+// GetToken fetches a new ID token on every call. Tokens are not cached, since relying parties
+// such as Anthropic WIF reject a token whose jti was already exchanged.
+func (p *IdentityTokenProvider) GetToken(ctx context.Context, _ ...option.Option) (credential.Token, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.requestURL, nil)
 	if err != nil {
 		return credential.Token{}, errors.WrapIf(err, "could not build token request")

@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"sync"
 	"time"
 
 	"emperror.dev/errors"
@@ -45,7 +44,8 @@ type IdentityTokenProvider struct {
 	requestToken string
 	httpClient   *http.Client
 
-	mu    sync.Mutex
+	// lock serializes fetches. It is a channel rather than a mutex so waiting callers can honor ctx cancellation.
+	lock  chan struct{}
 	token credential.Token
 }
 
@@ -67,8 +67,12 @@ func NewIdentityTokenProvider(opts ...option.Option) (*IdentityTokenProvider, er
 		}
 	}
 
-	if cfg.requestURL == "" || cfg.requestToken == "" {
-		return nil, errors.Errorf("%s and %s are not set (the job needs the id-token: write permission)", requestURLEnvVar, requestTokenEnvVar)
+	if cfg.requestURL == "" {
+		return nil, errors.Errorf("%s is not set (the job needs the id-token: write permission)", requestURLEnvVar)
+	}
+
+	if cfg.requestToken == "" {
+		return nil, errors.Errorf("%s is not set (the job needs the id-token: write permission)", requestTokenEnvVar)
 	}
 
 	u, err := url.Parse(cfg.requestURL)
@@ -91,13 +95,19 @@ func NewIdentityTokenProvider(opts ...option.Option) (*IdentityTokenProvider, er
 		requestURL:   u.String(),
 		requestToken: cfg.requestToken,
 		httpClient:   httpClient,
+		lock:         make(chan struct{}, 1),
 	}, nil
 }
 
 // GetToken returns the cached ID token, fetching a new one if it is missing or about to expire.
 func (p *IdentityTokenProvider) GetToken(ctx context.Context, _ ...option.Option) (credential.Token, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	select {
+	case p.lock <- struct{}{}:
+	case <-ctx.Done():
+		return credential.Token{}, errors.WithStackIf(ctx.Err())
+	}
+
+	defer func() { <-p.lock }()
 
 	if p.token.Token != "" && time.Until(p.token.ExpiresAt) > minValidity {
 		return p.token, nil

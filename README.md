@@ -47,7 +47,7 @@ This library provides a unified interface for obtaining and refreshing credentia
 - **Vault** Exchanges ID tokens for secrets from Vault using Vault's JWT authentication.
 - **Conjur:** Exchanges ID tokens for secrets from CyberArk Conjur (Secrets Manager Self-Hosted and SaaS) using Conjur's JWT authenticator, and polls for rotated values.
 - **GitHub App:** Mints GitHub App installation access tokens by signing a JWT with the App's private key and refreshes them before expiration.
-- **GitHub Actions:** Fetches OIDC ID tokens from the GitHub Actions runtime to use as the identity token for any of the exchanges above.
+- **GitHub Actions:** Fetches OIDC ID tokens from the GitHub Actions runtime for the providers that exchange an identity token (AWS, GCP, Azure, OCI, Vault, Conjur, Generic, RFC 7523 and RFC 8693).
 
 ## Installation
 
@@ -845,7 +845,7 @@ for cred := range credCh {
 
 ### GitHub Actions Identity Token Provider
 
-Fetches OIDC ID tokens from the GitHub Actions runtime, so a workflow can use them as the identity token for any provider above. The job needs the `id-token: write` permission:
+Fetches OIDC ID tokens from the GitHub Actions runtime, so a workflow can pass them to any provider that takes an `IdentityTokenProvider` (AWS, GCP, Azure, OCI, Vault, Conjur, Generic, RFC 7523 and RFC 8693). The job needs the `id-token: write` permission:
 
 ```yaml
 permissions:

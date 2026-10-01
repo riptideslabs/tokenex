@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -115,83 +114,32 @@ func TestGetToken_NoAudience(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestGetToken_Caching(t *testing.T) {
+func TestGetToken_FetchesEveryCall(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name         string
-		ttl          time.Duration
-		wantRequests int32
-	}{
-		{name: "reuses valid token", ttl: 10 * time.Minute, wantRequests: 1},
-		{name: "refetches token about to expire", ttl: 30 * time.Second, wantRequests: 2},
+	exp := time.Now().Add(10 * time.Minute).Unix()
+	tokens := []string{
+		newJWT(t, jwt.MapClaims{"jti": "1", "exp": exp}),
+		newJWT(t, jwt.MapClaims{"jti": "2", "exp": exp}),
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			idToken := newIDToken(t, time.Now().Add(tt.ttl))
-
-			var requests atomic.Int32
-
-			srv := newServer(t, func(w http.ResponseWriter, r *http.Request) {
-				requests.Add(1)
-				tokenHandler(idToken)(w, r)
-			})
-
-			p := newProvider(t, srv)
-
-			for range 2 {
-				_, err := p.GetToken(t.Context())
-				require.NoError(t, err)
-			}
-
-			assert.Equal(t, tt.wantRequests, requests.Load())
-		})
-	}
-}
-
-func TestGetToken_WaitingCallerHonorsContext(t *testing.T) {
-	t.Parallel()
-
-	idToken := newIDToken(t, time.Now().Add(10*time.Minute))
-
-	received := make(chan struct{}, 1)
-	release := make(chan struct{})
-	releaseOnce := sync.OnceFunc(func() { close(release) })
+	var requests atomic.Int32
 
 	srv := newServer(t, func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case received <- struct{}{}:
-		default:
-		}
-
-		<-release
-		tokenHandler(idToken)(w, r)
+		n := requests.Add(1)
+		tokenHandler(tokens[int(n-1)%len(tokens)])(w, r)
 	})
-	// Registered after newServer, so it runs before srv.Close and unblocks the handler if the test fails early.
-	t.Cleanup(releaseOnce)
 
 	p := newProvider(t, srv)
 
-	done := make(chan error, 1)
+	first, err := p.GetToken(t.Context())
+	require.NoError(t, err)
 
-	go func() {
-		_, err := p.GetToken(t.Context())
-		done <- err
-	}()
+	second, err := p.GetToken(t.Context())
+	require.NoError(t, err)
 
-	<-received
-
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
-	defer cancel()
-
-	_, err := p.GetToken(ctx)
-	require.ErrorIs(t, err, context.DeadlineExceeded)
-
-	releaseOnce()
-	require.NoError(t, <-done)
+	assert.Equal(t, int32(2), requests.Load())
+	assert.NotEqual(t, first.Token, second.Token)
 }
 
 func TestGetToken_Errors(t *testing.T) {

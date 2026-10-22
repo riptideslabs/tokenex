@@ -1,945 +1,102 @@
-# Tokenex - Cloud Credentials Provider Library
+# tokenex
 
-This library provides a unified interface for obtaining and refreshing credentials from various cloud providers and authentication systems. It is designed to facilitate secure access to cloud resources by exchanging identity tokens for temporary credentials.
+[![Go Reference](https://pkg.go.dev/badge/go.riptides.io/tokenex.svg)](https://pkg.go.dev/go.riptides.io/tokenex)
 
-## Related Blog Posts
+tokenex is a Go library that exchanges an identity token your workload already has, such as a SPIFFE JWT-SVID or a GitHub Actions OIDC token, for short-lived credentials from cloud providers, secret stores and OAuth2 servers. It refreshes the credentials before they expire and delivers each new one over a Go channel, so there are no long-lived keys to store or rotate.
 
-* **[Introducing tokenex: an open source Go library for fetching and refreshing credentials](https://blog.riptides.io/introducing-tokenex-an-open-source-go-library-for-fetching-and-refreshing-cloud-credentials)**
-* **[tokenex adds Vault & OpenBao support: Exchanging ID tokens (JWTs) for secrets without static credentials](https://blog.riptides.io/tokenex-adds-vault-openbao-support-exchanging-id-tokens-jwts-for-secrets-without-static-credentials)** 
-* **[Supplying short-lived OpenAI API keys to AI agents with Riptides](https://blog.riptides.io/ritptides-openai-apikeys/)**
-* **[Secretless Azure access with tokenex: Federated Identity via User-Assigned Managed Identity](https://blog.riptides.io/secretless-az-access-with-tokenex/)**
+| | Providers |
+|---|---|
+| **Identity token sources** | [Static JWT](docs/common-setup.md#identity-token-providers) · [GitHub Actions OIDC](docs/githubactions.md) · [SPIFFE / SPIRE JWT-SVID](docs/spiffe.md) |
+| **Exchanged for** | [AWS](docs/aws.md) · [GCP](docs/gcp.md) · [Azure](docs/azure.md) · [OCI](docs/oci.md) · [Vault / OpenBao](docs/vault.md) · [CyberArk Conjur](docs/conjur.md) · [RFC 7523](docs/rfc7523.md) incl. [Anthropic WIF](docs/rfc7523.md#anthropic-workload-identity-federation) · [RFC 8693](docs/rfc8693.md) incl. [OpenAI WIF](docs/rfc8693.md#openai-workload-identity-federation) · [Generic](docs/generic.md) |
+| **Other refreshed credentials** | [Kubernetes Secret](docs/k8ssecret.md) · [OAuth2 authorization code](docs/oauth2ac.md) · [OAuth2 client credentials](docs/oauth2cc.md) · [GitHub App](docs/githubapp.md) |
 
----
+Any identity token source works with any provider in the second row.
 
-## Table of Contents
-* [Features](#features)
-* [Installation](#installation)
-* [Usage](#usage)
-    * [Common Setup](#common-setup)
-    * [AWS Provider](#aws-credentials-provider)
-    * [GCP Provider](#gcp-credentials-provider)
-    * [Azure Provider](#azure-credentials-provider)
-    * [OCI Provider](#oci-credentials-provider)
-    * [Generic Provider](#generic-credentials-provider)
-    * [K8sSecret Provider](#k8ssecret-credentials-provider)
-    * [OAuth2 Authorization Code](#oauth2-authorization-code-flow-provider)
-    * [OAuth2 Client Credentials](#oauth2-client-credentials-flow-provider)
-    * [Vault Provider](#vault-credentials-provider)
-    * [Conjur Provider](#conjur-credentials-provider)
-    * [GitHub App Provider](#github-app-credentials-provider)
-    * [GitHub Actions Identity Token Provider](#github-actions-identity-token-provider)
-    * [SPIFFE Identity Token Provider](#spiffe-identity-token-provider)
-* [Channel Behavior](#channel-behavior)
-* [License](#license)
-* [Contributing](#contributing)
-
----
-
-## Features
-
-- **AWS:** Exchanges ID tokens for AWS temporary session credentials using AWS's Workload Identity Federation
-- **GCP:** Exchanges ID tokens for GCP access tokens using GCP's Workload Identity Federation
-- **Azure:** Exchanges ID tokens for Azure access tokens using Microsoft Entra ID's Workload Identity Federation
-- **OCI:** Exchanges ID tokens for OCI User Principal Session Tokens (UPST) using OCI's Workload Identity Federation
-- **Generic:** Simply returns the token provided by the identity token provider and refreshes it before expiration
-- **K8sSecret:** Watches a Kubernetes secret which contains a token and publishes updates when the secret changes
-- **OAuth2AC:** Obtains access tokens through OAuth2 authorization code flow and refreshes them before expiration
-- **OAuth2CC:** Obtains access tokens through OAuth2 client credentials flow and refreshes them before expiration
-- **Vault** Exchanges ID tokens for secrets from Vault using Vault's JWT authentication.
-- **Conjur:** Exchanges ID tokens for secrets from CyberArk Conjur (Secrets Manager Self-Hosted and SaaS) using Conjur's JWT authenticator, and polls for rotated values.
-- **GitHub App:** Mints GitHub App installation access tokens by signing a JWT with the App's private key and refreshes them before expiration.
-- **GitHub Actions:** Fetches OIDC ID tokens from the GitHub Actions runtime for the providers that exchange an identity token (AWS, GCP, Azure, OCI, Vault, Conjur, Generic, RFC 7523 and RFC 8693).
-- **SPIFFE:** Fetches JWT-SVIDs from the SPIFFE Workload API (e.g. a SPIRE agent) for the same providers.
-
-## Installation
-
-To use the credentials providers, ensure you have Go installed and set up your project to include the necessary dependencies.
+## Quick start
 
 ```bash
 go get go.riptides.io/tokenex
 ```
 
-## Usage
-
-Below are examples demonstrating how to use each credential provider in the library.
-
-### Common Setup
+Exchange the workload's SPIRE JWT-SVID for AWS credentials and keep them fresh:
 
 ```go
+package main
+
 import (
-    "context"
-    "log"
-    "os"
-    "os/signal"
-    "sync"
-    "syscall"
-    "time"
-    "go.riptides.io/tokenex/pkg/token"
+	"context"
+	"log"
+
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/go-logr/logr"
+
+	"go.riptides.io/tokenex/pkg/aws"
+	"go.riptides.io/tokenex/pkg/credential"
+	"go.riptides.io/tokenex/pkg/token/spiffe"
 )
 
-// Create a cancellable context
-ctx, cancel := context.WithCancel(context.Background())
-defer cancel()
-
-// Set up graceful shutdown
-signalChan := make(chan os.Signal, 1)
-signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
-go func() {
-    sig := <-signalChan
-    log.Printf("Received signal: %v, shutting down...", sig)
-    cancel()
-}()
-
-// Create a wait group to track goroutines
-var wg sync.WaitGroup
-
-// Create a logger
-logger := log.Default()
-
-// Create an identity token provider
-// This is used by most credential providers to exchange for service-specific tokens
-idToken := "your-id-token"
-idTokenProvider := token.NewStaticIdentityTokenProvider(idToken)
-```
-
-### AWS Credentials Provider
-
-```go
-import (
-    "go.riptides.io/tokenex/pkg/aws"
-    "go.riptides.io/tokenex/pkg/credential"
-    awssdk "github.com/aws/aws-sdk-go-v2/aws"
-)
-
-// Create the AWS credentials provider
-awsProvider, err := aws.NewCredentialsProvider(ctx, logger, &awssdk.Config{Region: "us-west-2"})
-if err != nil {
-    log.Fatalf("Failed to create AWS credentials provider: %v", err)
-}
-
-// Get AWS credentials
-awsCredsChan, err := awsProvider.GetCredentials(
-    ctx,
-    idTokenProvider,
-    aws.WithRoleArn("arn:aws:iam::123456789012:role/example-role"),
-    aws.WithRoleSessionName("example-session"),
-)
-if err != nil {
-    log.Fatalf("Failed to get AWS credentials: %v", err)
-}
-
-// Process credentials from the channel in a goroutine with proper context handling
-wg.Add(1)
-go func() {
-    defer wg.Done()
-    for {
-        select {
-        case creds, ok := <-awsCredsChan:
-            if !ok {
-                log.Println("AWS credentials channel closed")
-                return
-            }
-            if creds.Err != nil {
-                log.Printf("Error: %v", creds.Err)
-                return
-            }
-            
-            awsCreds := creds.Credential.(*credential.AWSCreds)
-            log.Printf("Access Key ID: %s", awsCreds.AccessKeyID)
-            // Use the credentials...
-            
-        case <-ctx.Done():
-            log.Println("Context cancelled, shutting down AWS credentials handler")
-            return
-        }
-    }
-}()
-
-// In a real application, you would do other work here
-// ...
-
-// Wait for graceful shutdown when your application is terminating
-// wg.Wait() // Uncomment this in your actual application
-```
-
-### GCP Credentials Provider
-
-```go
-import (
-    "go.riptides.io/tokenex/pkg/gcp"
-    "go.riptides.io/tokenex/pkg/credential"
-)
-
-// Create the GCP credentials provider
-gcpProvider, err := gcp.NewCredentialsProvider(ctx, logger)
-if err != nil {
-    log.Fatalf("Failed to create GCP credentials provider: %v", err)
-}
-
-// Get GCP credentials
-gcpCredsChan, err := gcpProvider.GetCredentials(
-    ctx,
-    idTokenProvider,
-    gcp.WithAudience("//iam.googleapis.com/projects/123456/locations/global/workloadIdentityPools/example-pool/providers/example-provider"),
-    gcp.WithServiceAccountEmail("service-account@project-id.iam.gserviceaccount.com"),
-)
-if err != nil {
-    log.Fatalf("Failed to get GCP credentials: %v", err)
-}
-
-// Process credentials from the channel in a goroutine with proper context handling
-wg.Add(1)
-go func() {
-    defer wg.Done()
-    for {
-        select {
-        case creds, ok := <-gcpCredsChan:
-            if !ok {
-                log.Println("GCP credentials channel closed")
-                return
-            }
-            if creds.Err != nil {
-                log.Printf("Error: %v", creds.Err)
-                return
-            }
-            
-            gcpCreds := creds.Credential.(*credential.Oauth2Creds)
-            log.Printf("Access Token: %s", gcpCreds.AccessToken)
-            // Use the credentials...
-            
-        case <-ctx.Done():
-            log.Println("Context cancelled, shutting down GCP credentials handler")
-            return
-        }
-    }
-}()
-```
-
-### Azure Credentials Provider
-
-```go
-import (
-    "go.riptides.io/tokenex/pkg/azure"
-    "go.riptides.io/tokenex/pkg/credential"
-)
-
-// Create the Azure credentials provider
-azureProvider, err := azure.NewCredentialsProvider(ctx, logger)
-if err != nil {
-    log.Fatalf("Failed to create Azure credentials provider: %v", err)
-}
-
-// Get Azure credentials
-azureCredsChan, err := azureProvider.GetCredentials(
-    ctx,
-    idTokenProvider,
-    azure.WithClientID("your-client-id"),
-    azure.WithTenantID("your-tenant-id"),
-    azure.WithScope("https://management.azure.com/.default"),
-)
-if err != nil {
-    log.Fatalf("Failed to get Azure credentials: %v", err)
-}
-
-// Process credentials from the channel in a goroutine with proper context handling
-wg.Add(1)
-go func() {
-    defer wg.Done()
-    for {
-        select {
-        case creds, ok := <-azureCredsChan:
-            if !ok {
-                log.Println("Azure credentials channel closed")
-                return
-            }
-            if creds.Err != nil {
-                log.Printf("Error: %v", creds.Err)
-                return
-            }
-            
-            azureCreds := creds.Credential.(*credential.Oauth2Creds)
-            log.Printf("Access Token: %s", azureCreds.AccessToken)
-            // Use the credentials...
-            
-        case <-ctx.Done():
-            log.Println("Context cancelled, shutting down Azure credentials handler")
-            return
-        }
-    }
-}()
-```
-
-### OCI Credentials Provider
-
-```go
-import (
-    "go.riptides.io/tokenex/pkg/oci"
-    "go.riptides.io/tokenex/pkg/credential"
-)
-
-// Create the OCI credentials provider
-ociProvider, err := oci.NewCredentialsProvider(ctx, logger)
-if err != nil {
-    log.Fatalf("Failed to create OCI credentials provider: %v", err)
-}
-
-// Get OCI credentials
-ociCredsChan, err := ociProvider.GetCredentials(
-    ctx,
-    idTokenProvider,
-    oci.WithClientID("your-client-id"),
-    oci.WithIdentityDomainURL("https://idcs-example.identity.oraclecloud.com"),
-)
-if err != nil {
-    log.Fatalf("Failed to get OCI credentials: %v", err)
-}
-
-// Process credentials from the channel in a goroutine with proper context handling
-wg.Add(1)
-go func() {
-    defer wg.Done()
-    for {
-        select {
-        case creds, ok := <-ociCredsChan:
-            if !ok {
-                log.Println("OCI credentials channel closed")
-                return
-            }
-            if creds.Err != nil {
-                log.Printf("Error: %v", creds.Err)
-                return
-            }
-            
-            ociCreds := creds.Credential.(*credential.Oauth2Creds)
-            log.Printf("Access Token: %s", ociCreds.AccessToken)
-            // Use the credentials...
-            
-        case <-ctx.Done():
-            log.Println("Context cancelled, shutting down OCI credentials handler")
-            return
-        }
-    }
-}()
-```
-
-### Generic Credentials Provider
-
-```go
-import (
-    "go.riptides.io/tokenex/pkg/generic"
-    "go.riptides.io/tokenex/pkg/credential"
-)
-
-// Create the Generic credentials provider
-genericProvider, err := generic.NewCredentialsProvider(ctx, logger)
-if err != nil {
-    log.Fatalf("Failed to create Generic credentials provider: %v", err)
-}
-
-// Get Generic credentials (passes through the identity token)
-genericCredsChan, err := genericProvider.GetCredentials(ctx, idTokenProvider)
-if err != nil {
-    log.Fatalf("Failed to get Generic credentials: %v", err)
-}
-
-// Process credentials from the channel in a goroutine with proper context handling
-wg.Add(1)
-go func() {
-    defer wg.Done()
-    for {
-        select {
-        case creds, ok := <-genericCredsChan:
-            if !ok {
-                log.Println("Generic credentials channel closed")
-                return
-            }
-            if creds.Err != nil {
-                log.Printf("Error: %v", creds.Err)
-                return
-            }
-            
-            genericCreds := creds.Credential.(*credential.Oauth2Creds)
-            log.Printf("Token: %s", genericCreds.AccessToken)
-            // Use the token...
-            
-        case <-ctx.Done():
-            log.Println("Context cancelled, shutting down Generic credentials handler")
-            return
-        }
-    }
-}()
-```
-
-### K8sSecret Credentials Provider
-
-```go
-import (
-    "go.riptides.io/tokenex/pkg/k8ssecret"
-    "go.riptides.io/tokenex/pkg/credential"
-    "sigs.k8s.io/controller-runtime/pkg/cache"
-)
-
-// Assume you have already initialized a Kubernetes client and cache
-// This typically involves:
-// 1. Getting a Kubernetes config (config.GetConfig())
-// 2. Creating a controller-runtime cache (cache.New())
-// 3. Starting the cache (cache.Start(ctx))
-k8sCache := yourInitializedCache
-
-// Create the K8sSecret credentials provider
-k8sProvider, err := k8ssecret.NewCredentialsProvider(ctx, k8sCache)
-if err != nil {
-    log.Fatalf("Failed to create K8sSecret credentials provider: %v", err)
-}
-
-// Define the secret reference
-secretRef := k8ssecret.SecretRef{
-    Name:      "token-secret",
-    Namespace: "default",
-    Key:       "token",
-}
-
-// Get credentials from the Kubernetes secret
-k8sCredsChan, err := k8sProvider.GetCredentials(ctx, secretRef)
-if err != nil {
-    log.Fatalf("Failed to get K8sSecret credentials: %v", err)
-}
-
-// Process credentials from the channel in a goroutine with proper context handling
-wg.Add(1)
-go func() {
-    defer wg.Done()
-    for {
-        select {
-        case creds, ok := <-k8sCredsChan:
-            if !ok {
-                log.Println("K8sSecret credentials channel closed")
-                return
-            }
-            if creds.Err != nil {
-                log.Printf("Error: %v", creds.Err)
-                return
-            }
-            
-            k8sCreds := creds.Credential.(*credential.Oauth2Creds)
-            log.Printf("Token: %s", k8sCreds.AccessToken)
-            // Use the token...
-            
-        case <-ctx.Done():
-            log.Println("Context cancelled, shutting down K8sSecret credentials handler")
-            return
-        }
-    }
-}()
-```
-
-### OAuth2 Authorization Code Flow Provider
-
-```go
-import (
-    "errors"
-    "go.riptides.io/tokenex/pkg/oauth2ac"
-    "go.riptides.io/tokenex/pkg/credential"
-    "github.com/go-logr/logr"
-    "golang.org/x/oauth2"
-    "sigs.k8s.io/controller-runtime/pkg/cache"
-)
-
-// Assume you have already initialized a Kubernetes client and cache
-// This typically involves:
-// 1. Getting a Kubernetes config (config.GetConfig())
-// 2. Creating a controller-runtime cache (cache.New())
-// 3. Starting the cache (cache.Start(ctx))
-k8sCache := yourInitializedCache
-
-// Create a logger
-logger := logr.New(logr.Discard())
-
-// Create a token storage implementation
-// This is a simple in-memory implementation for example purposes
-type inMemoryTokenStorage struct {
-    tokens map[string]*oauth2.Token
-}
-
-func newInMemoryTokenStorage() *inMemoryTokenStorage {
-    return &inMemoryTokenStorage{
-        tokens: make(map[string]*oauth2.Token),
-    }
-}
-
-func (s *inMemoryTokenStorage) Get(ctx context.Context, id string) (*oauth2.Token, error) {
-    token, ok := s.tokens[id]
-    if !ok {
-        return nil, errors.New("token not found")
-    }
-    return token, nil
-}
-
-func (s *inMemoryTokenStorage) Store(ctx context.Context, id string, token *oauth2.Token) error {
-    s.tokens[id] = token
-    return nil
-}
-
-func (s *inMemoryTokenStorage) Delete(ctx context.Context, id string) error {
-    delete(s.tokens, id)
-    return nil
-}
-
-tokenStorage := newInMemoryTokenStorage()
-
-// Define the OAuth2 configuration
-config := &oauth2ac.CredentialsConfig{
-    AuthorizationEndpointURL: "https://auth.example.com/oauth2/authorize",
-    TokenEndpointURL:         "https://auth.example.com/oauth2/token",
-    RedirectURL:              "https://localhost:8080/callback",
-    Scopes:                   []string{"openid", "profile"},
-    UsePKCE:                  true, // Use PKCE for added security
-    SecretRef: oauth2ac.SecretRef{
-        Name:      "oauth-secret",
-        Namespace: "default",
-        Key:       "credentials", // Contains <client_id:client_secret>
-    },
-}
-
-// Create the OAuth2AC credentials provider
-oauth2Provider, err := oauth2ac.NewCredentialsProvider(
-    "my-oauth-provider", // Unique ID for this provider
-    k8sCache,
-    tokenStorage,
-    config,
-    logger,
-)
-if err != nil {
-    log.Fatalf("Failed to create OAuth2AC credentials provider: %v", err)
-}
-
-// Start the authorization flow
-statusChan, err := oauth2Provider.Start(ctx)
-if err != nil {
-    log.Fatalf("Failed to start OAuth2 flow: %v", err)
-}
-
-// Monitor the authorization status
-go func() {
-    for status := range statusChan {
-        log.Printf("Auth Status: %v", status.Event)
-        
-        switch status.Event {
-        case oauth2ac.UnauthorizesStatusEvent:
-            // User needs to authorize
-            log.Printf("Authorization required")
-            
-            // Generate authorization URL for the user to visit
-            state, authURL := oauth2Provider.AuthCodeURL(ctx)
-            log.Printf("Please visit: %s", authURL)
-            log.Printf("State: %s (save this to verify the callback)", state)
-            
-        case oauth2ac.AuthorizedStatusEvent:
-            log.Printf("Successfully authorized")
-            // At this stage, the initial token is available in token storage
-            // and will be automatically refreshed before expiration
-            
-        default:
-            // Handle unexpected event type
-            if status.Err != nil {
-                log.Printf("Auth Error: %v", status.Err)
-                // You might want to retry or exit depending on the error
-            }
-        }
-    }
-}()
-
-// In a real application, you would have a callback endpoint (HTTP handler) that receives
-// the authorization code and state when the user is redirected back from the authorization server.
-// For example, if your redirect URL is "https://localhost:8080/callback", you would have
-// an HTTP handler for that path that extracts the code and state from the request:
-//
-// HTTP handler example (not part of this sample):
-func callbackHandler(w http.ResponseWriter, r *http.Request) {
-    // Extract code and state from the request
-    code := r.URL.Query().Get("code")
-    state := r.URL.Query().Get("state")
-    
-    // Verify the state matches what you generated (to prevent CSRF attacks)
-    // Then complete the authorization flow as shown below
-    token, err := oauth2Provider.Authorize(ctx, state, code)
-    if err != nil {
-        http.Error(w, "Authorization failed: "+err.Error(), http.StatusInternalServerError)
-        return
-    }
-
-    // After successful authorization, the credentials channel will receive the token
-    // and refresh it automatically before it expires
-
-    log.Printf("Successfully authorized! Token expires at: %v", token.Expiry)
-    
-    // Inform the user that authorization was successful
-    w.Write([]byte("Successfully authorized! You can close this window."))
-}
-
-
-// Process credentials from the channel in a goroutine with proper context handling
-oauth2CredsChan, err :=  oauth2Provider.GetCredentials(ctx)
-if err != nil {
-    log.Fatalf("Failed to get OAuth2AC credentials: %v", err)
-}
-
-wg.Add(1)
-go func() {
-    defer wg.Done()
-    for {
-        select {
-        case creds, ok := <-oauth2CredsChan:
-            if !ok {
-                log.Println("OAuth2AC credentials channel closed")
-                return
-            }
-            if creds.Err != nil {
-                log.Printf("Error: %v", creds.Err)
-                return
-            }
-            
-            oauth2Creds := creds.Credential.(*credential.Oauth2Creds)
-            log.Printf("Access Token: %s", oauth2Creds.AccessToken)
-            // Use the token...
-            
-        case <-ctx.Done():
-            log.Println("Context cancelled, shutting down OAuth2AC credentials handler")
-            return
-        }
-    }
-}()
-```
-
-### OAuth2 Client Credentials Flow Provider
-
-```go
-import (
-    "go.riptides.io/tokenex/pkg/oauth2cc"
-    "go.riptides.io/tokenex/pkg/credential"
-    "sigs.k8s.io/controller-runtime/pkg/cache"
-)
-
-// Assume you have already initialized a Kubernetes client and cache
-// This typically involves:
-// 1. Getting a Kubernetes config (config.GetConfig())
-// 2. Creating a controller-runtime cache (cache.New())
-// 3. Starting the cache (cache.Start(ctx))
-k8sCache := yourInitializedCache
-
-// Create the OAuth2CC credentials provider
-oauth2ccProvider, err := oauth2cc.NewCredentialsProvider(ctx, k8sCache)
-if err != nil {
-    log.Fatalf("Failed to create OAuth2CC credentials provider: %v", err)
-}
-
-// Define the secret reference containing client ID and secret
-// The secret should contain a key with value in format "client_id:client_secret"
-secretRef := oauth2cc.SecretRef{
-    Name:      "oauth-secret",
-    Namespace: "default",
-    Key:       "credentials", // Key containing "client_id:client_secret"
-}
-
-// Get OAuth2 credentials
-oauth2ccCredsChan, err := oauth2ccProvider.GetCredentials(
-    ctx,
-    "https://auth.example.com/oauth2/token",
-    secretRef,
-    oauth2cc.WithScope("api.read api.write"),
-)
-if err != nil {
-    log.Fatalf("Failed to get OAuth2CC credentials: %v", err)
-}
-
-// Process credentials from the channel in a goroutine with proper context handling
-wg.Add(1)
-go func() {
-    defer wg.Done()
-    for {
-        select {
-        case creds, ok := <-oauth2ccCredsChan:
-            if !ok {
-                log.Println("OAuth2CC credentials channel closed")
-                return
-            }
-            if creds.Err != nil {
-                log.Printf("Error: %v", creds.Err)
-                return
-            }
-            
-            oauth2ccCreds := creds.Credential.(*credential.Oauth2Creds)
-            log.Printf("Access Token: %s", oauth2ccCreds.AccessToken)
-            // Use the token...
-            
-        case <-ctx.Done():
-            log.Println("Context cancelled, shutting down OAuth2CC credentials handler")
-            return
-        }
-    }
-}()
-
-// In a real application, you would wait for all goroutines to complete before exiting
-// wg.Wait()
-```
-
-
-### Vault Credentials Provider
-
-```go
-import (
-    "go.riptides.io/tokenex/pkg/credential"
-    "go.riptides.io/tokenex/pkg/token"
-    "go.riptides.io/tokenex/pkg/vault"
-)
-
-
-// Create a logger
-logger := logr.New(logr.Discard())
-
-// Create the Vault credentials provider
-vaultProvider, err := vault.NewCredentialsProvider(ctx, logger, "http://localhost:8200", nil)
-if err != nil {
-	return err
-}
-
-// Get credentials from Vault
-dbCredsChan, err := vaultProvider.GetCredentials(
-		ctx,
-		idTokenProvider,
-		vault.WithJWTAuthMethodPath("jwt"),
-		vault.WithJWTAuthRoleName("dbuser"),
-		vault.WithSecretFullPath("database/creds/pg-dyn-dbuser"),
-	)
+func main() {
+	ctx := context.Background()
+
+	// JWT-SVIDs from the SPIRE agent at SPIFFE_ENDPOINT_SOCKET.
+	svids, err := spiffe.NewIdentityTokenProvider(spiffe.WithAudience("sts.amazonaws.com"))
 	if err != nil {
-		return err
+		log.Fatal(err)
 	}
 
-// Process dynamic credentials from the channel in a goroutine with proper context handling
-wg.Add(1)
-go func() {
-    defer wg.Done()
-    for {
-        select {
-        case creds, ok := <-dbCredsChan:
-            if !ok {
-                logger.Info("Database credentials channel closed")
-                return
-            }
-            if creds.Err != nil {
-                logger.Error(creds.Err, "Error receiving database credentials", errors.GetDetails(creds.Err))
-                return
-            }
+	provider, err := aws.NewCredentialsProvider(ctx, logr.Discard(), &awssdk.Config{Region: "us-east-1"})
+	if err != nil {
+		log.Fatal(err)
+	}
 
-            dbSecret := creds.Credential.(*credential.VaultSecret)
+	creds, err := provider.GetCredentials(ctx, svids,
+		aws.WithRoleArn("arn:aws:iam::123456789012:role/spire-demo"),
+		aws.WithRoleSessionName("spire-demo"),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-            // Database secrets typically contain username and password
-            if username, ok := dbSecret.Data["username"].(string); ok {
-                logger.Info("Database username", "value", username)
-            }
-            if password, ok := dbSecret.Data["password"].(string); ok {
-                logger.Info("Database password", "value", password)
-            }
-
-        case <-ctx.Done():
-            log.Println("Context cancelled, shutting down database credentials handler")
-            return
-        }
-    }
-}()
-
-// In a real application, you would wait for all goroutines to complete before exiting
-// wg.Wait()
-```
-
-### Conjur Credentials Provider
-
-Configure a [JWT authenticator](https://docs.cyberark.com/secrets-manager-sh/latest/en/content/operations/services/cjr-authn-jwt.htm) in Conjur that trusts your identity token issuer (`jwks-uri` or `provider-uri`, `issuer`, `audience`), then read variables with it. All variables are read in one batch request and published as a `*credential.Secret` under the keys you choose.
-
-```go
-import (
-    "go.riptides.io/tokenex/pkg/conjur"
-    "go.riptides.io/tokenex/pkg/credential"
-)
-
-// tlsConfig may be nil; set RootCAs when Conjur's certificate is issued by a private CA.
-// For Secrets Manager SaaS, use "https://<subdomain>.secretsmgr.cyberark.cloud/api" and account "conjur".
-conjurProvider, err := conjur.NewCredentialsProvider(ctx, logger, "https://conjur.example.com", tlsConfig)
-if err != nil {
-    return err
-}
-
-credsChan, err := conjurProvider.GetCredentials(
-    ctx,
-    idTokenProvider,
-    conjur.WithAccount("myorg"),
-    conjur.WithServiceID("riptides"), // authn-jwt/<service-id>
-    conjur.WithVariables(map[string]string{
-        "username": "prod/db/username",
-        "password": "prod/db/password",
-    }),
-    // Only needed when the authenticator has no token-app-property:
-    // conjur.WithHostID("apps/myapp"),
-)
-if err != nil {
-    return err
-}
-
-for creds := range credsChan {
-    if creds.Err != nil {
-        return creds.Err
-    }
-
-    secret := creds.Credential.(*credential.Secret)
-    logger.Info("Database username", "value", secret.Data["username"])
+	// A fresh result arrives before the previous credentials expire.
+	for res := range creds {
+		if res.Err != nil {
+			log.Fatal(res.Err)
+		}
+		c := res.Credential.(*credential.AWSCreds)
+		log.Printf("access key %s, expires %s", c.AccessKeyID, c.Expires)
+	}
 }
 ```
 
-Conjur variables have no lease, so the provider reads them again every 15 minutes by default (`conjur.WithPollInterval`).
+AWS needs an IAM OIDC identity provider that trusts SPIRE's OIDC Discovery Provider; [examples/spire-aws](examples/spire-aws) has the setup steps and a runnable version. In CI, swap `spiffe` for [`githubactions`](docs/githubactions.md); for another target, swap `aws` for any provider below.
 
-### GitHub App Credentials Provider
+## Providers
 
-```go
-import (
-    "os"
+Each provider has its own page with a full example.
 
-    "github.com/google/go-github/v66/github"
+### Identity token sources
 
-    "go.riptides.io/tokenex/pkg/credential"
-    "go.riptides.io/tokenex/pkg/githubapp"
-)
+- **[Static](docs/common-setup.md#identity-token-providers)** (`pkg/token`): holds a JWT you already have; `SetToken` replaces it.
+- **[GitHub Actions](docs/githubactions.md)** (`pkg/token/githubactions`): fetches OIDC ID tokens from the GitHub Actions runtime.
+- **[SPIFFE](docs/spiffe.md)** (`pkg/token/spiffe`): fetches JWT-SVIDs from the SPIFFE Workload API, e.g. a SPIRE agent.
 
-// Source the App's private key however you like (env var shown; could be a file,
-// k8s secret, Vault, etc.) and parse it once.
-key, err := githubapp.ParsePrivateKey([]byte(os.Getenv("GITHUB_APP_PRIVATE_KEY")))
-if err != nil {
-    log.Fatalf("parse private key: %v", err)
-}
+To bring your own source, implement `token.IdentityTokenProvider` or wrap a function with `token.IdentityTokenProviderFunc`.
 
-provider, err := githubapp.NewCredentialsProvider(ctx, logr.Discard())
-if err != nil {
-    log.Fatalf("new provider: %v", err)
-}
+### Credentials providers
 
-credCh, err := provider.GetCredentials(ctx,
-    githubapp.WithAppID(123456),
-    githubapp.WithInstallationID(7890123),
-    githubapp.WithPrivateKey(key),
-    // Optional: scope the token to specific repos / permissions.
-    // githubapp.WithRepositories([]string{"repo-a"}),
-    // githubapp.WithPermissions(&github.InstallationPermissions{Contents: github.String("read")}),
-    // Optional: GitHub Enterprise Server.
-    // githubapp.WithBaseURL("https://github.example.com/api/v3"),
-)
-if err != nil {
-    log.Fatalf("get credentials: %v", err)
-}
-
-for cred := range credCh {
-    if cred.Err != nil {
-        log.Printf("github app token error: %v", cred.Err)
-        break
-    }
-    tok := cred.Credential.(*credential.Token)
-    log.Printf("got installation token, expires %s", tok.ExpiresAt)
-}
-```
-
-### GitHub Actions Identity Token Provider
-
-Fetches OIDC ID tokens from the GitHub Actions runtime, so a workflow can pass them to any provider that takes an `IdentityTokenProvider` (AWS, GCP, Azure, OCI, Vault, Conjur, Generic, RFC 7523 and RFC 8693). The job needs the `id-token: write` permission:
-
-```yaml
-permissions:
-  id-token: write
-```
-
-The example exchanges the token for an Anthropic access token via Workload Identity Federation:
-
-```go
-import (
-    "go.riptides.io/tokenex/pkg/credential"
-    "go.riptides.io/tokenex/pkg/rfc7523"
-    "go.riptides.io/tokenex/pkg/token/githubactions"
-)
-
-// Reads ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN from the environment.
-// Use WithRequestURL / WithRequestToken where the runner's environment isn't inherited, e.g. in a container.
-idTokenProvider, err := githubactions.NewIdentityTokenProvider(
-    // Must match the audience the federation rule expects.
-    githubactions.WithAudience("api.anthropic.com"),
-)
-if err != nil {
-    log.Fatalf("new provider: %v", err)
-}
-
-credCh, err := rfc7523.GetAnthropicCredentials(ctx, logr.Discard(), idTokenProvider, rfc7523.AnthropicWIFConfig{
-    FederationRuleID: "fdrl_...",
-    OrganizationID:   "...",
-    ServiceAccountID: "...",
-    WorkspaceID:      "...",
-})
-if err != nil {
-    log.Fatalf("get credentials: %v", err)
-}
-
-for cred := range credCh {
-    if cred.Err != nil {
-        log.Printf("anthropic token error: %v", cred.Err)
-        break
-    }
-    tok := cred.Credential.(*credential.Oauth2Creds)
-    log.Printf("got anthropic access token, expires %s", tok.Expiry)
-}
-```
-
-### SPIFFE Identity Token Provider
-
-Fetches JWT-SVIDs from the SPIFFE Workload API (e.g. a SPIRE agent), so a workload can pass them to any provider that takes an `IdentityTokenProvider`. Each `GetToken` call asks the Workload API, so refreshes always use the SVID the agent currently serves.
-
-The example exchanges the SVID for AWS credentials. AWS needs an IAM OIDC identity provider for SPIRE's OIDC Discovery Provider, and the SVID audience must be `sts.amazonaws.com`:
-
-```go
-import (
-    "go.riptides.io/tokenex/pkg/aws"
-    "go.riptides.io/tokenex/pkg/credential"
-    "go.riptides.io/tokenex/pkg/token/spiffe"
-    awssdk "github.com/aws/aws-sdk-go-v2/aws"
-)
-
-// Reads the Workload API address from SPIFFE_ENDPOINT_SOCKET. Use WithAddr to set it explicitly.
-idTokenProvider, err := spiffe.NewIdentityTokenProvider(
-    // Must match the audience of the IAM OIDC identity provider.
-    spiffe.WithAudience("sts.amazonaws.com"),
-)
-if err != nil {
-    log.Fatalf("new provider: %v", err)
-}
-
-awsProvider, err := aws.NewCredentialsProvider(ctx, logr.Discard(), &awssdk.Config{Region: "us-east-1"})
-if err != nil {
-    log.Fatalf("new AWS provider: %v", err)
-}
-
-credCh, err := awsProvider.GetCredentials(ctx, idTokenProvider,
-    aws.WithRoleArn("arn:aws:iam::123456789012:role/spire-demo"),
-    aws.WithRoleSessionName("spire-demo"),
-)
-if err != nil {
-    log.Fatalf("get credentials: %v", err)
-}
-
-for cred := range credCh {
-    if cred.Err != nil {
-        log.Printf("aws credentials error: %v", cred.Err)
-        break
-    }
-    creds := cred.Credential.(*credential.AWSCreds)
-    log.Printf("got AWS credentials %s, expire %s", creds.AccessKeyID, creds.Expires)
-}
-```
-
-Use `WithSPIFFEID` to pick an SVID when the workload has more than one identity, and `WithSource` to reuse a `workloadapi.Client` or `workloadapi.JWTSource` you already have. [examples/spire-aws](examples/spire-aws) is a runnable version with the AWS setup steps.
+- **[AWS](docs/aws.md)** (`pkg/aws`): exchanges ID tokens for AWS temporary session credentials using AWS's Workload Identity Federation.
+- **[GCP](docs/gcp.md)** (`pkg/gcp`): exchanges ID tokens for GCP access tokens using GCP's Workload Identity Federation.
+- **[Azure](docs/azure.md)** (`pkg/azure`): exchanges ID tokens for Azure access tokens using Microsoft Entra ID's Workload Identity Federation.
+- **[OCI](docs/oci.md)** (`pkg/oci`): exchanges ID tokens for OCI User Principal Session Tokens (UPST) using OCI's Workload Identity Federation.
+- **[Vault](docs/vault.md)** (`pkg/vault`): exchanges ID tokens for secrets from Vault or OpenBao using JWT authentication.
+- **[Conjur](docs/conjur.md)** (`pkg/conjur`): exchanges ID tokens for secrets from CyberArk Conjur (Secrets Manager Self-Hosted and SaaS) using Conjur's JWT authenticator, and polls for rotated values.
+- **[RFC 7523](docs/rfc7523.md)** (`pkg/rfc7523`): exchanges ID tokens for OAuth2 access tokens with the `jwt-bearer` grant, including Anthropic Workload Identity Federation.
+- **[RFC 8693](docs/rfc8693.md)** (`pkg/rfc8693`): exchanges ID tokens for OAuth2 access tokens with token exchange, including OpenAI Workload Identity Federation.
+- **[Generic](docs/generic.md)** (`pkg/generic`): returns the identity token itself and refreshes it before expiration.
+- **[K8sSecret](docs/k8ssecret.md)** (`pkg/k8ssecret`): watches a Kubernetes secret which contains a token and publishes updates when the secret changes.
+- **[OAuth2AC](docs/oauth2ac.md)** (`pkg/oauth2ac`): obtains access tokens through the OAuth2 authorization code flow and refreshes them before expiration.
+- **[OAuth2CC](docs/oauth2cc.md)** (`pkg/oauth2cc`): obtains access tokens through the OAuth2 client credentials flow and refreshes them before expiration.
+- **[GitHub App](docs/githubapp.md)** (`pkg/githubapp`): mints GitHub App installation access tokens by signing a JWT with the App's private key and refreshes them before expiration.
 
 ## Channel Behavior
 
@@ -951,7 +108,7 @@ All credential providers in this library follow a consistent pattern for credent
 4. In case of errors, the `Err` field is populated, `Credential` is nil, and the refresh loop exits
 5. When the refresh loop exits, the channel is closed
 
-**Important**: Since these channels continuously provide credential updates (including automatic refreshes), they should be processed in a goroutine to avoid blocking the main execution flow, as shown in the examples above.
+**Important**: Since these channels continuously provide credential updates (including automatic refreshes), they should be processed in a goroutine to avoid blocking the main execution flow, as shown in the [provider docs](#providers).
 
 ### Handling Event Types
 
@@ -980,9 +137,16 @@ For proper application shutdown, always:
 
 This ensures that all resources are properly cleaned up and prevents goroutine leaks.
 
+## Related Blog Posts
+
+* **[Introducing tokenex: an open source Go library for fetching and refreshing credentials](https://blog.riptides.io/introducing-tokenex-an-open-source-go-library-for-fetching-and-refreshing-cloud-credentials)**
+* **[tokenex adds Vault & OpenBao support: Exchanging ID tokens (JWTs) for secrets without static credentials](https://blog.riptides.io/tokenex-adds-vault-openbao-support-exchanging-id-tokens-jwts-for-secrets-without-static-credentials)** 
+* **[Supplying short-lived OpenAI API keys to AI agents with Riptides](https://blog.riptides.io/ritptides-openai-apikeys/)**
+* **[Secretless Azure access with tokenex: Federated Identity via User-Assigned Managed Identity](https://blog.riptides.io/secretless-az-access-with-tokenex/)**
+
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Contributing
 

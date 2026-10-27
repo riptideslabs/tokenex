@@ -1,0 +1,21 @@
+name: cleanup-pr-caches
+
+on:
+  pull_request:
+    types:
+      - closed
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Delete caches for the closed PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_REF: refs/pull/${{ github.event.pull_request.number }}/merge
+        run: |
+          echo "Deleting all caches scoped to $PR_REF"
+          gh cache delete --all --ref "$PR_REF" --succeed-on-no-caches

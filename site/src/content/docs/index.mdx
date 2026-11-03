@@ -1,0 +1,218 @@
+---
+title: Short-lived credentials for Go workloads
+description: tokenex is a Go library that exchanges the identity token your workload already has for short-lived credentials from cloud providers, secret stores and OAuth2 servers, and keeps them fresh.
+template: splash
+editUrl: false
+hero:
+  title: tokenex
+  tagline: A Go library that exchanges the identity token your workload already has for short-lived credentials, and keeps them fresh. No keys to store or rotate.
+  actions:
+    - text: Quick start
+      link: "#quick-start"
+      icon: down-arrow
+    - text: Go reference
+      link: https://pkg.go.dev/go.riptides.io/tokenex
+      icon: external
+      variant: minimal
+    - text: GitHub
+      link: https://github.com/riptideslabs/tokenex
+      icon: github
+      variant: minimal
+---
+
+import { CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
+import Architecture from '../../components/Architecture.astro';
+import Features from '../../components/Features.astro';
+import Feature from '../../components/Feature.astro';
+import Providers from '../../components/Providers.astro';
+
+## Why
+
+A long-lived key works for anyone who has a copy. It sits in a config file, an environment variable or a CI secret, and someone has to rotate it.
+
+Cloud providers, secret stores and now Anthropic and OpenAI offer workload identity federation instead. The workload proves who it is with a signed token and gets short-lived credentials back. Most workloads already have such a token: SPIRE issues JWT-SVIDs, GitHub Actions issues OIDC tokens, and Kubernetes signs one for every service account. tokenex does the exchange, refreshes the credentials before they expire, and hands each new set to your code on a Go channel.
+
+## How it works
+
+This is the quick start below: a workload exchanges its SPIRE JWT-SVID for AWS credentials.
+
+<Architecture>
+  tokenex's parts have amber outlines. Swap either one for another identity token source or credentials provider, and the rest stays the same.
+</Architecture>
+
+<Steps>
+
+1. The SPIRE agent issues the workload a JWT-SVID through the Workload API. The identity token provider asks for one each time it's called, so it never hands out a stale token.
+
+2. The AWS credentials provider gets a token from it, with the audience `sts.amazonaws.com`.
+
+3. It exchanges the token at AWS STS with `AssumeRoleWithWebIdentity`, for the role you named.
+
+4. STS checks the token's signature against the keys SPIRE's OIDC Discovery Provider publishes, which an IAM OIDC identity provider trusts.
+
+5. The temporary credentials arrive on the channel as an `Update`. Before they expire, tokenex goes back to step 2 and sends the new ones on the same channel.
+
+6. Your code signs its AWS calls with them.
+
+</Steps>
+
+## Quick start
+
+```bash
+go get go.riptides.io/tokenex
+```
+
+Exchange the workload's SPIRE JWT-SVID for AWS credentials and keep them fresh:
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/go-logr/logr"
+
+	"go.riptides.io/tokenex/pkg/aws"
+	"go.riptides.io/tokenex/pkg/credential"
+	"go.riptides.io/tokenex/pkg/token/spiffe"
+)
+
+func main() {
+	ctx := context.Background()
+
+	// JWT-SVIDs from the SPIRE agent at SPIFFE_ENDPOINT_SOCKET.
+	svids, err := spiffe.NewIdentityTokenProvider(spiffe.WithAudience("sts.amazonaws.com"))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	provider, err := aws.NewCredentialsProvider(ctx, logr.Discard(), &awssdk.Config{Region: "us-east-1"})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	creds, err := provider.GetCredentials(ctx, svids,
+		aws.WithRoleArn("arn:aws:iam::123456789012:role/spire-demo"),
+		aws.WithRoleSessionName("spire-demo"),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// A fresh result arrives before the previous credentials expire.
+	for res := range creds {
+		if res.Err != nil {
+			log.Fatal(res.Err)
+		}
+		c := res.Credential.(*credential.AWSCreds)
+		log.Printf("access key %s, expires %s", c.AccessKeyID, c.Expires)
+	}
+}
+```
+
+AWS needs an IAM OIDC identity provider that trusts SPIRE's OIDC Discovery Provider; [examples/spire-aws](https://github.com/riptideslabs/tokenex/tree/main/examples/spire-aws) has the setup steps and a runnable version. In CI, swap `spiffe` for [`githubactions`](https://github.com/riptideslabs/tokenex/blob/main/docs/githubactions.md). For another target, swap `aws` for any of the [providers](#providers).
+
+## What you get
+
+<Features>
+  <Feature title="No keys to store">
+    The workload proves who it is with a token it already has. There's nothing long-lived to put in a config file or a CI secret, and nothing to rotate.
+  </Feature>
+  <Feature title="Always fresh">
+    Each provider refreshes its credentials before they expire and sends the new ones on the same channel, with a new identity token for every exchange.
+  </Feature>
+  <Feature title="Mix and match">
+    Any identity token source works with any provider that exchanges one: GitHub Actions to Azure, SPIRE to Vault, a static JWT to OpenAI.
+  </Feature>
+  <Feature title="AI providers too">
+    Anthropic and OpenAI workload identity federation, alongside AWS, GCP, Azure, OCI, Vault and CyberArk Conjur.
+  </Feature>
+  <Feature title="Traced">
+    Credentials providers record OpenTelemetry spans for their exchanges, with the tracer provider you pass or the one in the context.
+  </Feature>
+  <Feature title="Open source">
+    MIT. [Waterwheel](https://riptideslabs.github.io/waterwheel/) and the [Riptides](https://riptides.io) platform use it.
+  </Feature>
+</Features>
+
+## Providers
+
+Each provider has its own page with a full example.
+
+### Identity token sources
+
+<Providers group="sources" />
+
+To bring your own source, implement `token.IdentityTokenProvider` or wrap a function with `token.IdentityTokenProviderFunc`.
+
+### Exchanged for
+
+Any identity token source above works with each of these.
+
+<Providers group="exchanges" />
+
+### Other refreshed credentials
+
+<Providers group="others" />
+
+## The credential channel
+
+`GetCredentials` returns a `<-chan credential.Result`, and every provider uses it the same way:
+
+- The first credential and each refresh arrive as an `Update` event.
+- If the credential is removed, a `Remove` event arrives.
+- On an error, `Err` is set, `Credential` is nil and the refresh loop stops. Retrying is up to you.
+- When the loop stops, the channel is closed.
+
+The channel keeps delivering for as long as the context lives, so read it in its own goroutine. To shut down, cancel the context and wait for the goroutine.
+
+```go
+var wg sync.WaitGroup
+wg.Go(func() {
+	for res := range creds {
+		if res.Err != nil {
+			log.Printf("credentials: %v", res.Err) // the loop has stopped
+			return
+		}
+		switch res.Event {
+		case credential.UpdateEventType:
+			// New or refreshed: use res.Credential from now on.
+		case credential.RemoveEventType:
+			// The credential is gone: stop using it.
+		}
+	}
+})
+
+// On shutdown.
+cancel()
+wg.Wait()
+```
+
+## Read more
+
+<CardGrid>
+  <LinkCard
+    title="Introducing tokenex"
+    description="An open-source Go library for fetching and refreshing cloud credentials."
+    href="https://blog.riptides.io/introducing-tokenex-an-open-source-go-library-for-fetching-and-refreshing-cloud-credentials"
+  />
+  <LinkCard
+    title="tokenex adds Vault and OpenBao support"
+    description="Exchanging ID tokens for secrets without static credentials."
+    href="https://blog.riptides.io/tokenex-adds-vault-openbao-support-exchanging-id-tokens-jwts-for-secrets-without-static-credentials"
+  />
+  <LinkCard
+    title="Short-lived OpenAI API keys for AI agents"
+    description="Supplying short-lived OpenAI API keys to AI agents with Riptides."
+    href="https://blog.riptides.io/ritptides-openai-apikeys/"
+  />
+  <LinkCard
+    title="Secretless Azure access with tokenex"
+    description="Federated identity through a user-assigned managed identity."
+    href="https://blog.riptides.io/secretless-az-access-with-tokenex/"
+  />
+</CardGrid>
+
+<p class="tx-built">tokenex is built by <a href="https://riptides.io">Riptides</a>.</p>

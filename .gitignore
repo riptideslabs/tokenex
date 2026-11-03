@@ -5,3 +5,6 @@ go.work.sum
 .idea
 .licensei.cache
 .vscode
+/site/node_modules/
+/site/dist/
+/site/.astro/

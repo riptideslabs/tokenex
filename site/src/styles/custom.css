@@ -1,0 +1,191 @@
+/* Waterwheel's cool ink palette (waterwheel/site) with a tokenex amber for the
+   accent. Starlight's dark theme is the bare :root; the light theme overrides
+   it. */
+:root {
+  --sl-font: "Inter Variable", "Inter";
+
+  --sl-color-white: #f4f7fb;
+  --sl-color-gray-1: #e3e9f0;
+  --sl-color-gray-2: #b9c4d0;
+  --sl-color-gray-3: #8593a3;
+  --sl-color-gray-4: #4e5a69;
+  --sl-color-gray-5: #27303b;
+  --sl-color-gray-6: #141a22;
+  --sl-color-black: #0a0e13;
+
+  --sl-color-accent-low: #2e2108;
+  --sl-color-accent: #f0b43c;
+  --sl-color-accent-high: #fde8bb;
+
+  --sl-color-bg-nav: #0a0e13;
+
+  /* The diagrams' dot grid. */
+  --tx-dot: rgb(255 255 255 / 0.07);
+}
+:root[data-theme="light"] {
+  --sl-color-white: #0b1220;
+  --sl-color-gray-1: #1c2635;
+  --sl-color-gray-2: #3a4657;
+  --sl-color-gray-3: #5d6b7d;
+  --sl-color-gray-4: #8d99a8;
+  --sl-color-gray-5: #dbe1e8;
+  --sl-color-gray-6: #f0f3f7;
+  --sl-color-gray-7: #f7f9fb;
+  --sl-color-black: #ffffff;
+
+  /* The amber is too light for text on white, so links use a deeper one. */
+  --sl-color-accent-low: #fef3c7;
+  --sl-color-accent: #b45309;
+  --sl-color-accent-high: #78350f;
+
+  --sl-color-bg-nav: #ffffff;
+
+  --tx-dot: rgb(11 18 32 / 0.08);
+}
+
+body {
+  font-feature-settings: "cv11", "ss03";
+  -webkit-font-smoothing: antialiased;
+}
+
+.header {
+  border-bottom-color: var(--sl-color-gray-5);
+}
+.site-title {
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+/* Headings and prose. */
+.sl-markdown-content :is(h2, h3) {
+  font-weight: 650;
+  letter-spacing: -0.025em;
+  color: var(--sl-color-white);
+}
+.sl-markdown-content h2 {
+  margin-top: 4rem;
+  font-size: clamp(var(--sl-text-2xl), 1.2rem + 1.4vw, var(--sl-text-4xl));
+}
+.sl-markdown-content h2 + p {
+  margin-top: 0.75rem;
+}
+.sl-markdown-content :not(pre) > code {
+  padding: 0.12em 0.4em;
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.375rem;
+  background: var(--sl-color-gray-6);
+  font-size: 0.875em;
+}
+
+/* Buttons: a solid primary, outlined for the rest. */
+.sl-link-button {
+  font-weight: 550;
+  transition: background 0.15s, border-color 0.15s;
+}
+.sl-link-button.primary {
+  background: var(--sl-color-accent);
+  border-color: transparent;
+}
+.sl-link-button.primary:hover {
+  background: color-mix(in srgb, var(--sl-color-accent) 85%, var(--sl-color-white));
+}
+.sl-link-button.minimal {
+  padding-inline: 1.125rem;
+  border-color: var(--sl-color-gray-5);
+  background: color-mix(in srgb, var(--sl-color-gray-6) 60%, transparent);
+}
+.sl-link-button.minimal:hover {
+  border-color: var(--sl-color-gray-4);
+  color: var(--sl-color-white);
+}
+@media (min-width: 50rem) {
+  .sl-link-button.minimal {
+    padding-inline: 1.25rem;
+  }
+}
+
+/* Steps: numbered accent bullets on a soft guide line. */
+.sl-steps > li::before {
+  background: var(--sl-color-accent-low);
+  color: var(--sl-color-accent-high);
+  font-weight: 650;
+}
+.sl-steps > li::after {
+  background: linear-gradient(var(--sl-color-gray-5), transparent);
+}
+
+/* The closing line. */
+.tx-built {
+  margin-top: 4rem !important;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--sl-color-gray-5);
+  font-size: var(--sl-text-sm);
+  color: var(--sl-color-gray-3);
+}
+
+
+/* Inline SVG diagrams (src/components/*.astro), as in waterwheel/site. */
+.diagram {
+  margin-block: 2rem;
+  overflow: hidden;
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 1rem;
+  background:
+    radial-gradient(circle at 1px 1px, var(--tx-dot) 1px, transparent 0) 0 0 / 18px 18px,
+    var(--sl-color-gray-6);
+}
+.diagram .scroll { overflow-x: auto; padding: 1.5rem 1.25rem; }
+.diagram svg { display: block; width: 100%; height: auto; min-width: 760px; }
+.diagram figcaption {
+  border-top: 1px solid var(--sl-color-gray-5);
+  padding: 0.9rem 1.25rem;
+  background: color-mix(in srgb, var(--sl-color-black) 35%, transparent);
+  font-size: var(--sl-text-sm);
+  color: var(--sl-color-gray-2);
+}
+.diagram .d-box { fill: var(--sl-color-black); stroke: var(--sl-color-gray-4); stroke-width: 1; }
+.diagram .d-box-tokenex {
+  fill: color-mix(in srgb, var(--sl-color-accent) 10%, var(--sl-color-black));
+  stroke: var(--sl-color-accent);
+  stroke-width: 1.5;
+}
+.diagram .d-note { fill: none; stroke: var(--sl-color-gray-4); stroke-width: 1; stroke-dasharray: 4 3; }
+.diagram .d-zone {
+  fill: color-mix(in srgb, var(--sl-color-white) 2.5%, transparent);
+  stroke: var(--sl-color-gray-5);
+  stroke-width: 1;
+}
+.diagram .d-edge { fill: none; stroke: var(--sl-color-gray-2); stroke-width: 1.4; stroke-linejoin: round; }
+.diagram .d-edge-dash { fill: none; stroke: var(--sl-color-gray-3); stroke-width: 1.2; stroke-dasharray: 5 4; stroke-linejoin: round; }
+.diagram .d-edge-acc { fill: none; stroke: var(--sl-color-accent); stroke-width: 2.4; }
+/* The credentials on their way: dashes flow towards the code that uses them. */
+.diagram .d-flow { stroke-dasharray: 7 5; animation: d-flow 0.9s linear infinite; }
+@keyframes d-flow { to { stroke-dashoffset: -12; } }
+.diagram .d-head { fill: var(--sl-color-gray-2); }
+.diagram .d-head-dash { fill: var(--sl-color-gray-3); }
+.diagram .d-head-acc { fill: var(--sl-color-accent); }
+.diagram .d-title { font: 600 13px var(--__sl-font); fill: var(--sl-color-white); letter-spacing: -0.01em; }
+.diagram .d-sub { font: 400 11px var(--__sl-font-mono); fill: var(--sl-color-gray-3); }
+.diagram .d-label { font: 500 11.5px var(--__sl-font); fill: var(--sl-color-white); }
+.diagram .d-label-acc { font: 600 11.5px var(--__sl-font); fill: var(--sl-color-accent-high); }
+:root[data-theme="light"] .diagram .d-label-acc { fill: var(--sl-color-accent); }
+.diagram .d-mono { font: 400 10.5px var(--__sl-font-mono); fill: var(--sl-color-gray-3); }
+.diagram .d-zone-label { font: 600 10px var(--__sl-font); fill: var(--sl-color-gray-3); letter-spacing: 0.12em; }
+/* Step badges: a circle with the step number, matching the list under the diagram. */
+.diagram .d-badge { fill: var(--sl-color-accent-low); stroke: var(--sl-color-accent); stroke-width: 1.2; }
+.diagram .d-badge-num { font: 700 10.5px var(--__sl-font); fill: var(--sl-color-accent-high); }
+/* Labels that sit across a zone border get a halo in the diagram's background. */
+.diagram .d-halo { paint-order: stroke; stroke: var(--sl-color-gray-6); stroke-width: 5px; stroke-linejoin: round; }
+
+@media (prefers-reduced-motion: reduce) {
+  .diagram .d-flow { animation: none; }
+}
+
+/* Link cards, flat like the rest. */
+.sl-link-card {
+  box-shadow: none;
+}
+.sl-link-card:hover {
+  background: transparent;
+  border-color: var(--sl-color-gray-4);
+}

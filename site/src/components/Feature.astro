@@ -1,0 +1,40 @@
+---
+// One card in a <Features> grid.
+interface Props {
+  title: string;
+}
+
+const { title } = Astro.props;
+---
+
+<div class="tx-feature">
+  <h3>{title}</h3>
+  <div class="body"><slot /></div>
+</div>
+
+<style>
+  .tx-feature {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 1.25rem;
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 0.5rem;
+  }
+
+  h3 {
+    margin: 0;
+    font-size: var(--sl-text-lg);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--sl-color-white);
+  }
+  .body,
+  .body :global(p) {
+    margin: 0;
+    font-size: var(--sl-text-sm);
+    line-height: 1.65;
+    color: var(--sl-color-gray-2);
+  }
+  .body :global(a) { color: var(--sl-color-text-accent); }
+</style>

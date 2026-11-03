@@ -1,0 +1,14 @@
+---
+// A responsive grid of <Feature> cards.
+---
+
+<div class="tx-features not-content"><slot /></div>
+
+<style>
+  .tx-features {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
+    gap: 1rem;
+    margin-block: 1.5rem;
+  }
+</style>

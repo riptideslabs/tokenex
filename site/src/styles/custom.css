@@ -62,11 +62,12 @@ body {
   letter-spacing: -0.025em;
   color: var(--sl-color-white);
 }
-.sl-markdown-content h2 {
+/* The front page's sections; the docs pages keep Starlight's sizes. */
+[data-has-hero] .sl-markdown-content h2 {
   margin-top: 4rem;
   font-size: clamp(var(--sl-text-2xl), 1.2rem + 1.4vw, var(--sl-text-4xl));
 }
-.sl-markdown-content h2 + p {
+[data-has-hero] .sl-markdown-content h2 + p {
   margin-top: 0.75rem;
 }
 .sl-markdown-content :not(pre) > code {

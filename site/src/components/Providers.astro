@@ -1,0 +1,102 @@
+---
+// One group of providers as a grid of small cards, each linking to its page
+// in the repo's docs/. Descriptions follow the README's provider list.
+interface Props {
+  group: keyof typeof groups;
+}
+
+const docs = "https://github.com/riptideslabs/tokenex/blob/main/docs";
+
+const groups = {
+  sources: [
+    { name: "Static", pkg: "pkg/token", doc: "common-setup.md#identity-token-providers", text: "Holds a JWT you already have; SetToken replaces it." },
+    { name: "GitHub Actions", pkg: "pkg/token/githubactions", doc: "githubactions.md", text: "OIDC ID tokens from the GitHub Actions runtime." },
+    { name: "SPIFFE", pkg: "pkg/token/spiffe", doc: "spiffe.md", text: "JWT-SVIDs from the SPIFFE Workload API, e.g. a SPIRE agent." },
+  ],
+  exchanges: [
+    { name: "AWS", pkg: "pkg/aws", doc: "aws.md", text: "Temporary session credentials, through AWS's workload identity federation." },
+    { name: "GCP", pkg: "pkg/gcp", doc: "gcp.md", text: "Access tokens, through GCP's Workload Identity Federation." },
+    { name: "Azure", pkg: "pkg/azure", doc: "azure.md", text: "Access tokens, through Microsoft Entra ID's workload identity federation." },
+    { name: "OCI", pkg: "pkg/oci", doc: "oci.md", text: "User principal session tokens (UPST), through OCI's workload identity federation." },
+    { name: "Vault / OpenBao", pkg: "pkg/vault", doc: "vault.md", text: "Secrets from Vault or OpenBao, with JWT authentication." },
+    { name: "CyberArk Conjur", pkg: "pkg/conjur", doc: "conjur.md", text: "Secrets from Conjur's JWT authenticator, polled for rotated values." },
+    { name: "RFC 7523", pkg: "pkg/rfc7523", doc: "rfc7523.md", text: "OAuth2 access tokens with the jwt-bearer grant, including Anthropic workload identity federation." },
+    { name: "RFC 8693", pkg: "pkg/rfc8693", doc: "rfc8693.md", text: "OAuth2 access tokens with token exchange, including OpenAI workload identity federation." },
+    { name: "Generic", pkg: "pkg/generic", doc: "generic.md", text: "The identity token itself, refreshed before it expires." },
+  ],
+  others: [
+    { name: "Kubernetes Secret", pkg: "pkg/k8ssecret", doc: "k8ssecret.md", text: "Watches a Secret that holds a token, and sends each change." },
+    { name: "OAuth2 authorization code", pkg: "pkg/oauth2ac", doc: "oauth2ac.md", text: "Access tokens from the authorization code flow, refreshed before they expire." },
+    { name: "OAuth2 client credentials", pkg: "pkg/oauth2cc", doc: "oauth2cc.md", text: "Access tokens from the client credentials flow, refreshed before they expire." },
+    { name: "GitHub App", pkg: "pkg/githubapp", doc: "githubapp.md", text: "Installation access tokens, minted with the App's private key." },
+  ],
+};
+
+const { group } = Astro.props;
+---
+
+<ul class="tx-providers not-content">
+  {
+    groups[group].map(({ name, pkg, doc, text }) => (
+      <li>
+        <a href={`${docs}/${doc}`}>{name}</a>
+        <code class="pkg">{pkg}</code>
+        <p>{text}</p>
+      </li>
+    ))
+  }
+</ul>
+
+<style>
+  .tx-providers {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr));
+    gap: 0.75rem;
+    margin-block: 1rem 1.5rem;
+    padding: 0;
+    list-style: none;
+  }
+
+  li {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    padding: 1rem 1.1rem;
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 0.5rem;
+    transition: border-color 0.15s;
+  }
+  li:hover { border-color: var(--sl-color-gray-4); }
+
+  /* The whole card is the link. */
+  a {
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--sl-color-white);
+    text-decoration: none;
+  }
+  a::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+  }
+  a:focus-visible { outline: none; }
+  li:has(a:focus-visible) { outline: 2px solid var(--sl-color-accent); outline-offset: 2px; }
+
+  /* Plain text, not the boxed inline code of the prose around it. */
+  .tx-providers .pkg {
+    padding: 0;
+    border: 0;
+    background: none;
+    font-family: var(--__sl-font-mono);
+    font-size: var(--sl-text-xs);
+    color: var(--sl-color-text-accent);
+  }
+  p {
+    margin: 0.2rem 0 0;
+    font-size: var(--sl-text-sm);
+    line-height: 1.6;
+    color: var(--sl-color-gray-2);
+  }
+</style>

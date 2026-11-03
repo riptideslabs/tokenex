@@ -29,6 +29,14 @@ vet: ## Run go vet against code
 test: ## Run tests
 	go test ./... -count=1
 
+.PHONY: site
+site: ## Serve the project page (site/) at http://localhost:4321
+	cd site && npm install && npm run dev
+
+.PHONY: site-build
+site-build: ## Build the project page into site/dist
+	cd site && npm ci && npm run build
+
 .PHONY: tidy
 tidy: ## Execute go mod tidy
 	GOPRIVATE=${GOPRIVATE} go mod tidy

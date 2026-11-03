@@ -1,0 +1,93 @@
+---
+// Replaces Starlight's hero: a status line, the title and tagline, the
+// actions from the page's frontmatter, and the exchange.
+import { LinkButton } from "@astrojs/starlight/components";
+import Exchange from "./Exchange.astro";
+
+const { data } = Astro.locals.starlightRoute.entry;
+const { title = data.title, tagline, actions = [] } = data.hero || {};
+---
+
+<div class="tx-hero">
+  <div class="copy">
+    <a class="status" href="#identity-token-sources">
+      New: SPIFFE and GitHub Actions identity tokens
+    </a>
+    <h1 id="_top" data-page-title set:html={title} />
+    {tagline && <p class="tagline" set:html={tagline} />}
+    {
+      actions.length > 0 && (
+        <div class="actions">
+          {actions.map(({ attrs: { class: className, ...attrs } = {}, icon, link: href, text, variant }) => (
+            <LinkButton {href} {variant} icon={icon?.name} class:list={[className]} {...attrs}>
+              {text}
+              {icon?.html && <Fragment set:html={icon.html} />}
+            </LinkButton>
+          ))}
+        </div>
+      )
+    }
+  </div>
+  <Exchange />
+</div>
+
+<style>
+  .tx-hero {
+    display: grid;
+    gap: 2.5rem;
+    align-items: center;
+    padding-block: 2.5rem 1.5rem;
+  }
+
+  .copy {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1.25rem;
+  }
+
+  .status {
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-sm);
+    font-weight: 500;
+    text-decoration: none;
+  }
+  .status:hover {
+    color: var(--sl-color-white);
+    text-decoration: underline;
+    text-underline-offset: 0.2em;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: clamp(2.75rem, 1.5rem + 5vw, 4.75rem);
+    font-weight: 700;
+    line-height: 1.02;
+    letter-spacing: -0.04em;
+    color: var(--sl-color-white);
+  }
+
+  .tagline {
+    margin: 0;
+    max-width: 34rem;
+    font-size: clamp(var(--sl-text-base), 0.9rem + 0.6vw, var(--sl-text-xl));
+    line-height: 1.6;
+    color: var(--sl-color-gray-2);
+  }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 0.5rem;
+  }
+
+  @media (min-width: 50rem) {
+    .tx-hero {
+      grid-template-columns: 7fr 5fr;
+      gap: 3rem;
+      padding-block: clamp(3rem, 1rem + 8vmin, 7rem) clamp(2rem, 1rem + 4vmin, 4rem);
+    }
+  }
+</style>

@@ -1,0 +1,125 @@
+---
+// The hero's exchange: identity tokens (three-part JWTs) slide into a turning
+// ring and credentials slide out, one after another, as the refresh loop does.
+// Everything stops for visitors who prefer reduced motion.
+const R = 88;
+const rad = (a: number) => (a * Math.PI) / 180;
+const pt = (a: number, r = R) => [200 + r * Math.cos(rad(a)), 150 + r * Math.sin(rad(a))].map((n) => n.toFixed(1));
+
+// A clockwise arc of the ring, and an arrowhead at its end.
+function arc(from: number, to: number) {
+  const [x1, y1] = pt(from);
+  const [x2, y2] = pt(to);
+  return `M${x1} ${y1} A${R} ${R} 0 0 1 ${x2} ${y2}`;
+}
+function head(a: number) {
+  const along = [-Math.sin(rad(a)), Math.cos(rad(a))];
+  const [x, y] = pt(a).map(Number);
+  const tip = [x + 9 * along[0], y + 9 * along[1]];
+  const [ox, oy] = pt(a, R + 10);
+  const [ix, iy] = pt(a, R - 10);
+  return `M${tip.map((n) => n.toFixed(1)).join(" ")} L${ox} ${oy} L${ix} ${iy} Z`;
+}
+
+// Chips one period apart, so the strip can slide by one period and loop.
+const P = 70;
+const tokens = [-P, 0, P];
+const creds = [230, 230 + P, 230 + 2 * P];
+---
+
+<svg class="tx-exchange" viewBox="0 0 400 300" aria-hidden="true">
+  <defs>
+    <linearGradient id="tx-fade-in" gradientUnits="userSpaceOnUse" x1="0" x2="100">
+      <stop offset="0" stop-color="#000"></stop>
+      <stop offset=".4" stop-color="#fff"></stop>
+      <stop offset=".8" stop-color="#fff"></stop>
+      <stop offset="1" stop-color="#000"></stop>
+    </linearGradient>
+    <linearGradient id="tx-fade-out" gradientUnits="userSpaceOnUse" x1="300" x2="400">
+      <stop offset="0" stop-color="#000"></stop>
+      <stop offset=".2" stop-color="#fff"></stop>
+      <stop offset=".6" stop-color="#fff"></stop>
+      <stop offset="1" stop-color="#000"></stop>
+    </linearGradient>
+    <mask id="tx-in"><rect width="100" height="300" fill="url(#tx-fade-in)"></rect></mask>
+    <mask id="tx-out"><rect x="300" width="100" height="300" fill="url(#tx-fade-out)"></rect></mask>
+  </defs>
+
+  <line x1="0" y1="150" x2="100" y2="150" class="track"></line>
+  <line x1="300" y1="150" x2="400" y2="150" class="track"></line>
+
+  <g mask="url(#tx-in)">
+    <g class="slide">
+      {
+        tokens.map((x) => (
+          <g transform={`translate(${x} 141)`}>
+            <rect width="46" height="18" rx="9" class="jwt"></rect>
+            <rect x="8" y="7" width="8" height="4" rx="2" class="part"></rect>
+            <rect x="19" y="7" width="8" height="4" rx="2" class="part"></rect>
+            <rect x="30" y="7" width="8" height="4" rx="2" class="part sig"></rect>
+          </g>
+        ))
+      }
+    </g>
+  </g>
+
+  <g mask="url(#tx-out)">
+    <g class="slide">
+      {
+        creds.map((x) => (
+          <g transform={`translate(${x} 141)`}>
+            <rect width="46" height="18" rx="9" class="cred"></rect>
+            <rect x="10" y="7" width="26" height="4" rx="2" class="secret"></rect>
+          </g>
+        ))
+      }
+    </g>
+  </g>
+
+  <circle cx="200" cy="150" r="58" class="guide"></circle>
+  <g class="spin">
+    <path d={arc(200, 340)} class="arc"></path>
+    <path d={head(340)} class="head"></path>
+    <path d={arc(20, 160)} class="arc"></path>
+    <path d={head(160)} class="head"></path>
+  </g>
+  <rect x="170" y="139" width="60" height="22" rx="11" class="core"></rect>
+</svg>
+
+<style>
+  .tx-exchange {
+    display: block;
+    width: min(90%, 22rem);
+    height: auto;
+    margin-inline: auto;
+  }
+  @media (min-width: 50rem) {
+    .tx-exchange { width: min(100%, 28rem); }
+  }
+
+  .track { stroke: var(--sl-color-gray-5); stroke-width: 1.5; }
+  .jwt { fill: var(--sl-color-black); stroke: var(--sl-color-gray-3); stroke-width: 1.5; }
+  .part { fill: var(--sl-color-gray-3); }
+  .part.sig { fill: var(--sl-color-gray-2); }
+  .cred { fill: var(--sl-color-accent); }
+  .secret { fill: var(--sl-color-black); opacity: 0.55; }
+
+  .guide { fill: none; stroke: var(--sl-color-accent); stroke-width: 1.5; opacity: 0.35; }
+  .arc { fill: none; stroke: var(--sl-color-accent); stroke-width: 7; stroke-linecap: round; }
+  .head { fill: var(--sl-color-accent); stroke: var(--sl-color-accent); stroke-width: 2; stroke-linejoin: round; }
+  .core { fill: var(--sl-color-accent); }
+
+  .spin {
+    transform-box: view-box;
+    transform-origin: 200px 150px;
+    animation: tx-spin 16s linear infinite;
+  }
+  .slide { animation: tx-slide 2.8s linear infinite; }
+
+  @keyframes tx-spin { to { transform: rotate(360deg); } }
+  @keyframes tx-slide { to { transform: translateX(70px); } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .spin, .slide { animation: none; }
+  }
+</style>

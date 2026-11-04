@@ -146,7 +146,8 @@ func TestExchangeToken_JSONBody(t *testing.T) {
 	require.NoError(t, err)
 	cred := <-ch
 	require.NoError(t, cred.Err)
-	tok := cred.Credential.(*credential.Oauth2Creds)
+	tok, ok := cred.Credential.(*credential.Oauth2Creds)
+	require.True(t, ok)
 	assert.Equal(t, "json-token", tok.AccessToken)
 }
 

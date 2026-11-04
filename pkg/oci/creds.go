@@ -364,5 +364,9 @@ func getTokenExpiration(token *jwt.Token) (time.Time, error) {
 		return time.Time{}, errors.WrapIf(err, "failed to get token expiration time")
 	}
 
+	if exp == nil {
+		return time.Time{}, errors.New("token has no exp claim")
+	}
+
 	return exp.Time, nil
 }

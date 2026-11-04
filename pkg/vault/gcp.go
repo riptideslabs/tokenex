@@ -69,7 +69,7 @@ func (r *gcpAccessTokenProvider) fetchAccessToken(ctx context.Context, parentSpa
 	defer span.End()
 
 	// use the service account key to authenticate to GCP and obtain an access token
-	gcpCreds, err := google.CredentialsFromJSON(fetchCtx, r.serviceAccountKeyJSON, r.scopes...)
+	gcpCreds, err := google.CredentialsFromJSONWithType(fetchCtx, r.serviceAccountKeyJSON, google.ServiceAccount, r.scopes...)
 	if err != nil {
 		err = errors.WrapIf(err, "failed to obtain GCP credentials from service account key")
 		tokenextelemetry.RecordResult(span, err)

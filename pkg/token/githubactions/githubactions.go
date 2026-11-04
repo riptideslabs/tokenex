@@ -15,11 +15,11 @@ import (
 	"os"
 
 	"emperror.dev/errors"
-	"github.com/golang-jwt/jwt/v5"
 
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
 	"go.riptides.io/tokenex/pkg/token"
+	"go.riptides.io/tokenex/pkg/util"
 )
 
 const (
@@ -130,12 +130,12 @@ func (p *IdentityTokenProvider) GetToken(ctx context.Context, _ ...option.Option
 		return credential.Token{}, errors.New("token response has no value")
 	}
 
-	t, _, err := jwt.NewParser().ParseUnverified(tokenResp.Value, jwt.MapClaims{})
+	claims, err := util.DecodeJWTClaims(tokenResp.Value)
 	if err != nil {
 		return credential.Token{}, errors.WrapIf(err, "could not parse ID token")
 	}
 
-	exp, err := t.Claims.GetExpirationTime()
+	exp, err := claims.GetExpirationTime()
 	if err != nil {
 		return credential.Token{}, errors.WrapIf(err, "could not get ID token expiration time")
 	}

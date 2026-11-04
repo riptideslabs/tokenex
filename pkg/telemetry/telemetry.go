@@ -10,11 +10,12 @@ import (
 	"context"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+
+	"go.riptides.io/tokenex/pkg/util"
 )
 
 // Tracer returns a Tracer scoped to scopeName from tp. If tp is nil, it
@@ -45,18 +46,18 @@ func IdentityTokenAttrs(prefix string, rawToken string, expiresAt time.Time) []a
 		attribute.String(prefix+".expires_at", expiresAt.UTC().Format(time.RFC3339)),
 	}
 
-	tok, _, err := jwt.NewParser().ParseUnverified(rawToken, jwt.MapClaims{})
+	claims, err := util.DecodeJWTClaims(rawToken)
 	if err != nil {
 		return attrs
 	}
 
-	if sub, err := tok.Claims.GetSubject(); err == nil && sub != "" {
+	if sub, err := claims.GetSubject(); err == nil && sub != "" {
 		attrs = append(attrs, attribute.String(prefix+".subject", sub))
 	}
-	if aud, err := tok.Claims.GetAudience(); err == nil && len(aud) > 0 {
+	if aud, err := claims.GetAudience(); err == nil && len(aud) > 0 {
 		attrs = append(attrs, attribute.StringSlice(prefix+".audience", aud))
 	}
-	if iss, err := tok.Claims.GetIssuer(); err == nil && iss != "" {
+	if iss, err := claims.GetIssuer(); err == nil && iss != "" {
 		attrs = append(attrs, attribute.String(prefix+".iss", iss))
 	}
 

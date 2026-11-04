@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"emperror.dev/errors"
+	"github.com/golang-jwt/jwt/v5"
 
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
-	"go.riptides.io/tokenex/pkg/util"
 )
 
 // StaticIdentityTokenProvider is a simple implementation of IdentityTokenProvider that holds a static token.
@@ -38,12 +38,17 @@ func (s *StaticIdentityTokenProvider) GetToken(ctx context.Context, opts ...opti
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	claims, err := util.DecodeJWTClaims(s.token)
+	jwtParser := jwt.NewParser()
+	t, _, err := jwtParser.ParseUnverified(s.token, jwt.MapClaims{})
 	if err != nil {
 		return credential.Token{}, errors.WrapIf(err, "failed to parse token")
 	}
 
-	exp, err := claims.GetExpirationTime()
+	if t.Claims == nil {
+		return credential.Token{}, errors.New("token has no claims")
+	}
+
+	exp, err := t.Claims.GetExpirationTime()
 	if err != nil {
 		return credential.Token{}, errors.WrapIf(err, "failed to get token expiration time")
 	}
@@ -55,7 +60,7 @@ func (s *StaticIdentityTokenProvider) GetToken(ctx context.Context, opts ...opti
 	}
 
 	return credential.Token{
-		Token:     s.token,
+		Token:     t.Raw,
 		ExpiresAt: expiresAt,
 	}, nil
 }

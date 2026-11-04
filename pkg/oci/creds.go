@@ -107,7 +107,7 @@ func fetchCredentials(ctx context.Context, tracer trace.Tracer, configAttrs []at
 
 	span.SetAttributes(tokenextelemetry.IdentityTokenAttrs("id_token", idToken.Token, idToken.ExpiresAt)...)
 
-	authToken, authClaims, err := exchangeToken(fetchCtx, tokenEndpoint, cfg.clientID, cfg.clientSecret, idToken.Token, publicKey)
+	authToken, err := exchangeToken(fetchCtx, tokenEndpoint, cfg.clientID, cfg.clientSecret, idToken.Token, publicKey)
 	if err != nil {
 		err = errors.WrapIf(err, "token exchange failed")
 		tokenextelemetry.RecordResult(span, err)
@@ -115,7 +115,7 @@ func fetchCredentials(ctx context.Context, tracer trace.Tracer, configAttrs []at
 		return credential.Token{}, err
 	}
 
-	expTime, err := getTokenExpiration(authClaims)
+	expTime, err := getTokenExpiration(authToken)
 	if err != nil {
 		err = errors.WrapIf(err, "failed to get expiration time of the received UPST")
 		tokenextelemetry.RecordResult(span, err)
@@ -124,7 +124,7 @@ func fetchCredentials(ctx context.Context, tracer trace.Tracer, configAttrs []at
 	}
 
 	ociCredential := credential.Token{
-		Token:     authToken,
+		Token:     authToken.Raw,
 		ExpiresAt: expTime,
 	}
 
@@ -304,7 +304,7 @@ func exchangeToken(
 	clientSecret string,
 	idToken string,
 	publicKey string,
-) (string, jwt.MapClaims, error) {
+) (*jwt.Token, error) {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
@@ -318,22 +318,22 @@ func exchangeToken(
 		publicKey,
 	)
 	if err != nil {
-		return "", nil, errors.WrapIf(err, "failed to build token exchange request")
+		return nil, errors.WrapIf(err, "failed to build token exchange request")
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", nil, errors.WrapIf(err, "failed to execute token exchange request")
+		return nil, errors.WrapIf(err, "failed to execute token exchange request")
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", nil, errors.WrapIf(err, "failed to read token exchange response body")
+		return nil, errors.WrapIf(err, "failed to read token exchange response body")
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", nil, errors.NewWithDetails("token exchange request failed", "status", resp.Status, "statusCode", resp.StatusCode, "err_response", string(body))
+		return nil, errors.NewWithDetails("token exchange request failed", "status", resp.Status, "statusCode", resp.StatusCode, "err_response", string(body))
 	}
 
 	var respJSON struct {
@@ -341,25 +341,27 @@ func exchangeToken(
 	}
 
 	if err := json.Unmarshal(body, &respJSON); err != nil {
-		return "", nil, errors.WrapIf(err, "failed to decode token exchange response")
+		return nil, errors.WrapIf(err, "failed to decode token exchange response")
 	}
 
-	claims, err := util.DecodeJWTClaims(respJSON.Token)
+	jwtParser := jwt.NewParser()
+
+	token, _, err := jwtParser.ParseUnverified(respJSON.Token, jwt.MapClaims{})
 	if err != nil {
-		return "", nil, errors.WrapIf(err, "failed to parse UPST received from OCI")
+		return nil, errors.WrapIf(err, "failed to parse UPST received from OCI")
 	}
 
-	return respJSON.Token, claims, nil
+	return token, nil
 }
 
-func getTokenExpiration(claims jwt.MapClaims) (time.Time, error) {
-	exp, err := claims.GetExpirationTime()
-	if err != nil {
-		return time.Time{}, errors.WrapIf(err, "failed to get token expiration time")
+func getTokenExpiration(token *jwt.Token) (time.Time, error) {
+	if token.Claims == nil {
+		return time.Time{}, errors.New("token has no claims")
 	}
 
-	if exp == nil {
-		return time.Time{}, errors.New("token has no exp claim")
+	exp, err := token.Claims.GetExpirationTime()
+	if err != nil {
+		return time.Time{}, errors.WrapIf(err, "failed to get token expiration time")
 	}
 
 	return exp.Time, nil

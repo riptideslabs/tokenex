@@ -105,14 +105,11 @@ func TestExchangeToken_Success(t *testing.T) {
 
 	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodPost, r.Method)
-		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
-
-		var body map[string]string
-
-		assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-		assert.Equal(t, GrantType, body["grant_type"])
-		assert.Equal(t, "my-subject-token", body["subject_token"])
-		assert.Equal(t, string(TokenTypeJWT), body["subject_token_type"])
+		assert.Equal(t, "application/x-www-form-urlencoded", r.Header.Get("Content-Type"))
+		assert.NoError(t, r.ParseForm())
+		assert.Equal(t, GrantType, r.PostForm.Get("grant_type"))
+		assert.Equal(t, "my-subject-token", r.PostForm.Get("subject_token"))
+		assert.Equal(t, string(TokenTypeJWT), r.PostForm.Get("subject_token_type"))
 
 		successHandler(wantToken, 3600)(w, r)
 	})
@@ -127,6 +124,30 @@ func TestExchangeToken_Success(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, wantToken, tok.AccessToken)
 	require.False(t, tok.Expiry.IsZero())
+}
+
+func TestExchangeToken_JSONBody(t *testing.T) {
+	t.Parallel()
+
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+		var body map[string]string
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, "subject", body["subject_token"])
+		successHandler("json-token", 60)(w, r)
+	})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	t.Cleanup(cancel)
+	cp, err := NewCredentialsProvider(ctx, newLogger())
+	require.NoError(t, err)
+	ch, err := cp.GetCredentials(ctx, srv.URL, &staticProvider{tok: "subject"},
+		WithBodyFormat(BodyFormatJSON), WithHTTPClient(srv.Client()))
+	require.NoError(t, err)
+	cred := <-ch
+	require.NoError(t, cred.Err)
+	tok := cred.Credential.(*credential.Oauth2Creds)
+	assert.Equal(t, "json-token", tok.AccessToken)
 }
 
 func TestExchangeToken_NoExpiry(t *testing.T) {
@@ -148,12 +169,9 @@ func TestExchangeToken_WithActorToken(t *testing.T) {
 	t.Parallel()
 
 	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]string
-
-		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
-
-		assert.Equal(t, "actor-jwt", body["actor_token"])
-		assert.Equal(t, string(TokenTypeJWT), body["actor_token_type"])
+		assert.NoError(t, r.ParseForm())
+		assert.Equal(t, "actor-jwt", r.PostForm.Get("actor_token"))
+		assert.Equal(t, string(TokenTypeJWT), r.PostForm.Get("actor_token_type"))
 
 		successHandler("tok", 60)(w, r)
 	})
@@ -171,10 +189,8 @@ func TestExchangeToken_WithAdditionalFields(t *testing.T) {
 	t.Parallel()
 
 	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]string
-
-		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
-		assert.Equal(t, "idp-123", body["identity_provider_id"])
+		assert.NoError(t, r.ParseForm())
+		assert.Equal(t, "idp-123 & team", r.PostForm.Get("identity_provider_id"))
 
 		successHandler("tok", 60)(w, r)
 	})
@@ -182,7 +198,7 @@ func TestExchangeToken_WithAdditionalFields(t *testing.T) {
 	cfg := &credentialsConfig{
 		tokenEndpointURL: srv.URL,
 		subjectTokenType: TokenTypeJWT,
-		additionalFields: map[string]string{"identity_provider_id": "idp-123"},
+		additionalFields: map[string]string{"identity_provider_id": "idp-123 & team"},
 	}
 
 	_, err := exchangeToken(t.Context(), srv.Client(), cfg, "subject", "")
@@ -193,11 +209,9 @@ func TestExchangeToken_ScopeAndAudience(t *testing.T) {
 	t.Parallel()
 
 	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]string
-
-		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
-		assert.Equal(t, "read write", body["scope"])
-		assert.Equal(t, "my-service", body["audience"])
+		assert.NoError(t, r.ParseForm())
+		assert.Equal(t, "read write", r.PostForm.Get("scope"))
+		assert.Equal(t, "my-service", r.PostForm.Get("audience"))
 
 		successHandler("tok", 60)(w, r)
 	})
@@ -292,6 +306,7 @@ func TestGetOpenAICredentials_RequestShape(t *testing.T) {
 	t.Parallel()
 
 	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 		var body map[string]string
 
 		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
@@ -323,6 +338,7 @@ func TestGetOpenAICredentials_RequestShape(t *testing.T) {
 		subjectProvider,
 		wif,
 		WithTokenEndpointURL(srv.URL),
+		WithBodyFormat(BodyFormatForm), // OpenAI must still use JSON.
 		WithHTTPClient(srv.Client()),
 	)
 	require.NoError(t, err)
@@ -336,6 +352,7 @@ func TestGetOpenAICredentials_NoClientID(t *testing.T) {
 	t.Parallel()
 
 	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 		var body map[string]string
 
 		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck

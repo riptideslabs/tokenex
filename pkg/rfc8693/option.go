@@ -95,6 +95,15 @@ func WithAdditionalFields(fields map[string]string) option.Option {
 	})
 }
 
+// WithBodyFormat selects the token request encoding. The default is
+// BodyFormatForm, as required by RFC 8693. Use BodyFormatJSON for endpoints
+// that explicitly require JSON.
+func WithBodyFormat(format BodyFormat) option.Option {
+	return withCredentialsOption(func(c *credentialsConfig) {
+		c.bodyFormat = format
+	})
+}
+
 func WithHTTPClient(client *http.Client) option.Option {
 	return withCredentialsOption(func(c *credentialsConfig) {
 		c.httpClient = client

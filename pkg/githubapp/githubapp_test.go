@@ -58,7 +58,7 @@ func TestValidateConfig(t *testing.T) {
 				installationID: 2,
 				privateKey:     key,
 				repositories:   []string{"r"},
-				permissions:    &github.InstallationPermissions{Contents: github.String("read")},
+				permissions:    &github.InstallationPermissions{Contents: new("read")},
 			},
 			wantErr: false,
 		},

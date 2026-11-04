@@ -14,6 +14,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/attribute"
 
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
@@ -386,4 +387,13 @@ func TestGetOpenAICredentials_NoClientID(t *testing.T) {
 
 	cred := <-ch
 	require.NoError(t, cred.Err)
+}
+
+func TestFetchSpanConfigAttrs_BodyFormat(t *testing.T) {
+	t.Parallel()
+
+	for format, want := range map[BodyFormat]string{BodyFormatForm: "form", BodyFormatJSON: "json"} {
+		attrs := fetchSpanConfigAttrs(&credentialsConfig{bodyFormat: format}, "correlation")
+		assert.Contains(t, attrs, attribute.String("cfg.body_format", want))
+	}
 }

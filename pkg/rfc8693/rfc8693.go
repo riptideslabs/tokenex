@@ -22,6 +22,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -66,6 +67,16 @@ type CredentialsProvider interface {
 	GetCredentials(ctx context.Context, tokenEndpointURL string, subjectTokenProvider token.IdentityTokenProvider, opts ...option.Option) (<-chan Credential, error)
 }
 
+// BodyFormat controls how a token exchange request is encoded.
+type BodyFormat int
+
+const (
+	// BodyFormatForm uses the encoding required by RFC 8693.
+	BodyFormatForm BodyFormat = iota
+	// BodyFormatJSON is used by endpoints such as OpenAI's workload identity endpoint.
+	BodyFormatJSON
+)
+
 var _ CredentialsProvider = &credentialsProvider{}
 
 type credentialsConfig struct {
@@ -78,6 +89,7 @@ type credentialsConfig struct {
 	audience             string
 	scopes               []string
 	additionalFields     map[string]string
+	bodyFormat           BodyFormat
 	httpClient           *http.Client
 
 	tracerProvider trace.TracerProvider
@@ -306,17 +318,33 @@ func exchangeToken(ctx context.Context, client *http.Client, cfg *credentialsCon
 
 	maps.Copy(body, cfg.additionalFields)
 
-	encoded, err := json.Marshal(body)
-	if err != nil {
-		return nil, errors.WrapIf(err, "could not encode token request")
+	var (
+		requestBody io.Reader
+		contentType string
+	)
+
+	if cfg.bodyFormat == BodyFormatJSON {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return nil, errors.WrapIf(err, "could not encode token request")
+		}
+		requestBody = bytes.NewReader(encoded)
+		contentType = "application/json"
+	} else {
+		values := url.Values{}
+		for key, value := range body {
+			values.Set(key, value)
+		}
+		requestBody = strings.NewReader(values.Encode())
+		contentType = "application/x-www-form-urlencoded"
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.tokenEndpointURL, bytes.NewReader(encoded))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.tokenEndpointURL, requestBody)
 	if err != nil {
 		return nil, errors.WrapIf(err, "could not build token request")
 	}
 
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := client.Do(req)

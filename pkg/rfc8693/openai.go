@@ -54,9 +54,11 @@ func GetOpenAICredentials(
 		fields["client_id"] = wif.ClientID
 	}
 
-	all := make([]option.Option, 0, len(opts)+2)
+	all := make([]option.Option, 0, len(opts)+3)
 	all = append(all, WithSubjectTokenType(TokenTypeJWT))
 	all = append(all, opts...)
+	// OpenAI's workload identity endpoint expects JSON rather than RFC 8693's form body.
+	all = append(all, WithBodyFormat(BodyFormatJSON))
 	all = append(all, WithAdditionalFields(fields))
 
 	return p.GetCredentials(ctx, openaiTokenEndpoint, subjectTokenProvider, all...)

@@ -23,12 +23,22 @@ var allowedAdditionalFieldKeys = []string{
 	"client_id",
 }
 
+func bodyFormatString(f BodyFormat) string {
+	switch f {
+	case BodyFormatJSON:
+		return "json"
+	default:
+		return "form"
+	}
+}
+
 func fetchSpanConfigAttrs(cfg *credentialsConfig, correlationID string) []attribute.KeyValue {
-	attrs := make([]attribute.KeyValue, 0, 7+len(allowedAdditionalFieldKeys))
+	attrs := make([]attribute.KeyValue, 0, 8+len(allowedAdditionalFieldKeys))
 	attrs = append(attrs,
 		attribute.String("cfg.token_endpoint_url", cfg.tokenEndpointURL),
 		attribute.StringSlice("cfg.scopes", cfg.scopes),
 		attribute.String("cfg.subject_token_type", string(cfg.subjectTokenType)),
+		attribute.String("cfg.body_format", bodyFormatString(cfg.bodyFormat)),
 		attribute.String("correlation_id", correlationID),
 	)
 

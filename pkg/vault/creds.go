@@ -189,8 +189,21 @@ type Provider interface {
 
 func (cp *credentialsProvider) isVault() {}
 
+// fetchClient returns a client for one fetch. A login stores its token on the
+// client it runs on, so identities sharing the provider must not share one.
+func (cp *credentialsProvider) fetchClient() (*api.Client, error) {
+	client, err := cp.client.Clone()
+	if err != nil {
+		return nil, errors.WrapIf(err, "failed to clone Vault client")
+	}
+
+	client.ClearToken()
+
+	return client, nil
+}
+
 // authenticateWithJWT exchanges an ID token for a Vault token using JWT auth method
-func (cp *credentialsProvider) authenticateWithJWT(ctx context.Context, idToken credential.Token, jwtAuthMethodPath string, roleName string) error {
+func authenticateWithJWT(ctx context.Context, client *api.Client, idToken credential.Token, jwtAuthMethodPath string, roleName string) error {
 	authMethod, err := jwtauth.New(
 		roleName,
 		jwtauth.WithMountPath(jwtAuthMethodPath),
@@ -200,7 +213,7 @@ func (cp *credentialsProvider) authenticateWithJWT(ctx context.Context, idToken 
 		return errors.WrapIfWithDetails(err, "failed to create JWT auth method", "auth_path", jwtAuthMethodPath, "role", roleName)
 	}
 
-	secret, err := cp.client.Auth().Login(ctx, authMethod)
+	secret, err := client.Auth().Login(ctx, authMethod)
 	if err != nil {
 		return errors.WrapIfWithDetails(err, "failed to authenticate with Vault using JWT", "auth_path", jwtAuthMethodPath, "role", roleName)
 	}
@@ -210,12 +223,12 @@ func (cp *credentialsProvider) authenticateWithJWT(ctx context.Context, idToken 
 	}
 
 	// Set the token for subsequent requests
-	cp.client.SetToken(secret.Auth.ClientToken)
+	client.SetToken(secret.Auth.ClientToken)
 
 	return nil
 }
 
-func (cp *credentialsProvider) authenticate(ctx context.Context, cfg *credentialsConfig) error {
+func authenticate(ctx context.Context, client *api.Client, cfg *credentialsConfig) error {
 	// Get ID token
 	idToken, err := cfg.identityTokenProvider.GetToken(ctx)
 	if err != nil {
@@ -225,7 +238,7 @@ func (cp *credentialsProvider) authenticate(ctx context.Context, cfg *credential
 	trace.SpanFromContext(ctx).SetAttributes(tokenextelemetry.IdentityTokenAttrs("id_token", idToken.Token, idToken.ExpiresAt)...)
 
 	// Authenticate with Vault using JWT
-	err = cp.authenticateWithJWT(ctx, idToken, cfg.jwtAuthMethodPath, cfg.jwtAuthRoleName)
+	err = authenticateWithJWT(ctx, client, idToken, cfg.jwtAuthMethodPath, cfg.jwtAuthRoleName)
 	if err != nil {
 		return errors.WrapIfWithDetails(err, "failed to authenticate with Vault", "auth_path", cfg.jwtAuthMethodPath, "role", cfg.jwtAuthRoleName)
 	}
@@ -238,12 +251,17 @@ func (cp *credentialsProvider) authenticate(ctx context.Context, cfg *credential
 // For static secrets (no lease), expiration is based on the secret's TTL if available,
 // or falls back to the poll interval to ensure periodic refresh.
 func (cp *credentialsProvider) retrieveCredentials(ctx context.Context, cfg *credentialsConfig) (*credentialData, error) {
-	err := cp.authenticate(ctx, cfg)
+	client, err := cp.fetchClient()
+	if err != nil {
+		return nil, err
+	}
+
+	err = authenticate(ctx, client, cfg)
 	if err != nil {
 		return nil, errors.WrapIf(err, "failed to authenticate with Vault")
 	}
 
-	secret, err := cp.client.Logical().ReadWithDataWithContext(ctx, cfg.secretFullPath, cfg.reqData)
+	secret, err := client.Logical().ReadWithDataWithContext(ctx, cfg.secretFullPath, cfg.reqData)
 	if err != nil {
 		return nil, errors.WrapIfWithDetails(err, "failed to read secret", "path", cfg.secretFullPath)
 	}

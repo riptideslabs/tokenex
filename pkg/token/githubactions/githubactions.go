@@ -9,7 +9,6 @@ package githubactions
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"emperror.dev/errors"
 	"github.com/golang-jwt/jwt/v5"
 
+	"go.riptides.io/tokenex/internal/httpx"
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
 	"go.riptides.io/tokenex/pkg/token"
@@ -78,15 +78,10 @@ func NewIdentityTokenProvider(opts ...option.Option) (*IdentityTokenProvider, er
 		u.RawQuery = q.Encode()
 	}
 
-	httpClient := cfg.httpClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-
 	return &IdentityTokenProvider{
 		requestURL:   u.String(),
 		requestToken: cfg.requestToken,
-		httpClient:   httpClient,
+		httpClient:   httpx.WithTimeout(cfg.httpClient),
 	}, nil
 }
 
@@ -112,13 +107,13 @@ func (p *IdentityTokenProvider) GetToken(ctx context.Context, _ ...option.Option
 
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := httpx.ReadBody(resp.Body, httpx.MaxTokenBody)
 	if err != nil {
 		return credential.Token{}, errors.WrapIf(err, "could not read token response body")
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return credential.Token{}, errors.Errorf("token request returned status %d: %s", resp.StatusCode, string(body))
+		return credential.Token{}, errors.Errorf("token request returned status %d: %s", resp.StatusCode, httpx.Snippet(body))
 	}
 
 	var tokenResp tokenResponse

@@ -34,14 +34,21 @@ func CalculateRefreshBuffer(timeUntilExpiry time.Duration) time.Duration {
 }
 
 // SendToChannel writes the credential.Result to the channel, ensuring the latest result is always available.
+// credsChan must be buffered.
 func SendToChannel(credsChan chan credential.Result, result credential.Result) {
-	select {
-	case credsChan <- result:
-		// Successfully wrote to the channel
-	default:
-		// Channel is full, read and discard the old value
-		<-credsChan
-		credsChan <- result
+	for {
+		select {
+		case credsChan <- result:
+			return
+		default:
+		}
+
+		// Channel is full: discard the old value, unless the consumer took it
+		// in the meantime. Waiting for it here would block forever.
+		select {
+		case <-credsChan:
+		default:
+		}
 	}
 }
 

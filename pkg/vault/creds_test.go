@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"go.riptides.io/tokenex/internal/httpx"
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/token"
 )
@@ -167,4 +168,53 @@ func TestConcurrentIdentitiesReadWithTheirOwnToken(t *testing.T) {
 	})
 
 	wg.Wait()
+}
+
+// Without a timeout a Vault that never answers parks the refresh loop.
+func TestFetchClientHasRequestTimeout(t *testing.T) {
+	t.Parallel()
+
+	cp, err := NewCredentialsProvider(t.Context(), logr.Discard(), "https://vault.example.com", nil)
+	require.NoError(t, err)
+
+	client, err := cp.fetchClient()
+	require.NoError(t, err)
+	assert.Equal(t, requestTimeout, client.ClientTimeout())
+}
+
+// The Vault client reads a response body whole, whatever its size.
+func TestResponseBodiesAreLimited(t *testing.T) {
+	t.Parallel()
+
+	testCases := map[string]struct {
+		status int
+		size   int
+	}{
+		"secret": {http.StatusOK, httpx.MaxSecretBody + 1},
+		"error":  {http.StatusForbidden, httpx.MaxErrorBody + 1},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1/auth/jwt/login" {
+					io.WriteString(w, `{"auth":{"client_token":"tok","lease_duration":3600}}`) //nolint:errcheck
+
+					return
+				}
+
+				w.WriteHeader(tc.status)
+				io.WriteString(w, strings.Repeat("x", tc.size)) //nolint:errcheck
+			}))
+			t.Cleanup(srv.Close)
+
+			cp, err := NewCredentialsProvider(t.Context(), logr.Discard(), srv.URL, nil)
+			require.NoError(t, err)
+
+			_, err = fetch(t.Context(), cp, "a", "a")
+			require.ErrorIs(t, err, httpx.ErrBodyTooLarge)
+		})
+	}
 }

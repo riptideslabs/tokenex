@@ -102,7 +102,7 @@ func WithBaseURL(url string) option.Option {
 // http.DefaultClient. Use this to control TLS, proxies, timeouts, or retries.
 // Only the Transport and Timeout are honored; Jar and CheckRedirect are not
 // propagated, since this provider does not use cookies and never follows
-// redirects.
+// redirects. A request times out after 30 seconds unless Timeout is set.
 func WithHTTPClient(client *http.Client) option.Option {
 	return withCredentialsOption(func(c *credentialsConfig) {
 		c.httpClient = client

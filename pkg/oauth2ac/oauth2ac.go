@@ -23,6 +23,7 @@ import (
 	toolscache "k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 
+	"go.riptides.io/tokenex/internal/httpx"
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
 	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
@@ -38,6 +39,9 @@ var (
 	ErrRefreshTokenRequired = errors.NewPlain("refresh token is required")
 	ErrInvalidToken         = errors.NewPlain("token is not valid")
 )
+
+// minRefreshInterval is the shortest wait between two timed refreshes.
+const minRefreshInterval = 10 * time.Second
 
 type (
 	Credential = credential.Result
@@ -408,6 +412,9 @@ func (cp *credentialsProvider) exchangeToken(ctx context.Context, tracer trace.T
 	defer span.End()
 	sc := span.SpanContext()
 
+	fetchCtx, cancel := context.WithTimeout(fetchCtx, httpx.DefaultTimeout)
+	defer cancel()
+
 	opts := []oauth2.AuthCodeOption{}
 
 	cp.logger.V(2).Info("exchange", "state", authState)
@@ -543,6 +550,9 @@ func (cp *credentialsProvider) fetchToken(ctx context.Context, tracer trace.Trac
 	fetchCtx, span := tracer.Start(ctx, fetchSpanName, spanOpts...)
 	defer span.End()
 
+	fetchCtx, cancel := context.WithTimeout(fetchCtx, httpx.DefaultTimeout)
+	defer cancel()
+
 	cfg := cp.oauth2Config()
 
 	accessToken, err := cfg.TokenSource(fetchCtx, &t).Token()
@@ -616,11 +626,20 @@ func (cp *credentialsProvider) tokenRefresherLoop(ctx context.Context) {
 
 		cp.logger.Info("access token obtained")
 
-		timeUntilExpiry := time.Until(accessToken.Expiry)
-		refreshBuffer := util.CalculateRefreshBuffer(timeUntilExpiry)
-		refreshTime = timeUntilExpiry - refreshBuffer
+		// A token without an expiry is not refreshed on a timer: a nil channel never fires.
+		var refreshTimer <-chan time.Time
 
-		cp.logger.Info("scheduling credential refresh", "refreshIn", refreshTime, "refreshBuffer", refreshBuffer, "expiresAt", accessToken.Expiry)
+		refreshTime = 0
+
+		if !accessToken.Expiry.IsZero() {
+			timeUntilExpiry := time.Until(accessToken.Expiry)
+			refreshBuffer := util.CalculateRefreshBuffer(timeUntilExpiry)
+			// An expiry in the past must not turn the loop into a busy one.
+			refreshTime = max(timeUntilExpiry-refreshBuffer, minRefreshInterval)
+			refreshTimer = time.After(refreshTime)
+
+			cp.logger.Info("scheduling credential refresh", "refreshIn", refreshTime, "refreshBuffer", refreshBuffer, "expiresAt", accessToken.Expiry)
+		}
 
 		cp.publishAccessToken(accessToken)
 
@@ -652,7 +671,7 @@ func (cp *credentialsProvider) tokenRefresherLoop(ctx context.Context) {
 			refreshTime = 0
 		case <-ctx.Done():
 			return
-		case <-time.After(refreshTime):
+		case <-refreshTimer:
 			cp.logger.V(2).Info("refreshing credentials")
 		}
 	}

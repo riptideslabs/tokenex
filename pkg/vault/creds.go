@@ -5,6 +5,7 @@ package vault
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"emperror.dev/errors"
@@ -16,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"go.riptides.io/tokenex/internal/httpx"
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
 	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
@@ -25,6 +27,9 @@ import (
 
 // ErrDataNotFound is returned when secret at a the specified secret path does not exist in Vault.
 var ErrDataNotFound = errors.New("data not found")
+
+// requestTimeout bounds one Vault request, as api.DefaultConfig does.
+const requestTimeout = 60 * time.Second
 
 // gcpCredentialConfig holds configuration specific to GCP credentials returned by the Google Cloud secrets engine in Vault.
 type gcpCredentialConfig struct {
@@ -533,6 +538,7 @@ func NewCredentialsProvider(ctx context.Context, logger logr.Logger, vaultAddr s
 
 	config := &api.Config{
 		Address: vaultAddr,
+		Timeout: requestTimeout,
 	}
 
 	// Configure TLS if provided
@@ -546,6 +552,12 @@ func NewCredentialsProvider(ctx context.Context, logger logr.Logger, vaultAddr s
 	client, err := api.NewClient(config)
 	if err != nil {
 		return nil, errors.WrapIf(err, "failed to create Vault client")
+	}
+
+	// The client reads response bodies whole. A unix socket address keeps the
+	// plain transport, which the client needs to set the dialer.
+	if !strings.HasPrefix(vaultAddr, "unix://") {
+		config.HttpClient.Transport = httpx.LimitResponses(config.HttpClient.Transport, httpx.MaxSecretBody, httpx.MaxErrorBody)
 	}
 
 	return &credentialsProvider{

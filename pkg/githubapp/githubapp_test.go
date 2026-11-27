@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -357,5 +358,41 @@ func TestAppJWTTransport(t *testing.T) {
 
 	if got := req.Header.Get("Authorization"); got != "" {
 		t.Fatalf("original request was mutated: Authorization=%q", got)
+	}
+}
+
+// The transport signs every hop, so a followed redirect would hand the App JWT
+// to the host it names.
+func TestAppClientDoesNotFollowRedirects(t *testing.T) {
+	t.Parallel()
+
+	var followed atomic.Bool
+
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { followed.Store(true) }))
+	t.Cleanup(target.Close)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := &credentialsConfig{appID: 1, installationID: 2, privateKey: mustGenerateKey(t), baseURL: srv.URL}
+	setDefaults(cfg)
+
+	client, err := newAppClient(cfg)
+	if err != nil {
+		t.Fatalf("newAppClient: %v", err)
+	}
+
+	if client.Client().Timeout == 0 {
+		t.Fatalf("client has no timeout")
+	}
+
+	if _, _, err := client.Apps.CreateInstallationToken(t.Context(), cfg.installationID, nil); err == nil {
+		t.Fatalf("a redirect response was accepted as a token")
+	}
+
+	if followed.Load() {
+		t.Fatalf("the redirect was followed")
 	}
 }

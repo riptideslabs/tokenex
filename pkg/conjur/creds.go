@@ -13,7 +13,6 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
-	"io"
 	"maps"
 	"net/http"
 	"net/url"
@@ -27,6 +26,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"go.riptides.io/tokenex/internal/httpx"
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
 	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
@@ -161,13 +161,13 @@ func (cp *credentialsProvider) authenticate(ctx context.Context, cfg *credential
 
 	defer resp.Body.Close()
 
-	accessToken, err := io.ReadAll(resp.Body)
+	accessToken, err := httpx.ReadBody(resp.Body, httpx.MaxTokenBody)
 	if err != nil {
 		return "", errors.WrapIf(err, "could not read authentication response body")
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", errors.Errorf("failed to authenticate with Conjur, status %d: %s", resp.StatusCode, accessToken)
+		return "", errors.Errorf("failed to authenticate with Conjur, status %d: %s", resp.StatusCode, httpx.Snippet(accessToken))
 	}
 
 	if len(accessToken) == 0 {
@@ -204,13 +204,13 @@ func (cp *credentialsProvider) retrieveVariables(ctx context.Context, cfg *crede
 
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := httpx.ReadBody(resp.Body, httpx.MaxSecretBody)
 	if err != nil {
 		return nil, errors.WrapIf(err, "could not read secrets response body")
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, errors.Errorf("failed to retrieve variables, status %d: %s", resp.StatusCode, body)
+		return nil, errors.Errorf("failed to retrieve variables, status %d: %s", resp.StatusCode, httpx.Snippet(body))
 	}
 
 	var byFullID map[string]string
@@ -343,7 +343,7 @@ func NewCredentialsProvider(_ context.Context, logger logr.Logger, applianceURL 
 	return &credentialsProvider{
 		logger:       logger.WithName("conjur_credentials"),
 		applianceURL: strings.TrimSuffix(applianceURL, "/"),
-		httpClient:   &http.Client{Transport: transport, Timeout: 30 * time.Second},
+		httpClient:   &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: httpx.NoRedirect},
 	}, nil
 }
 

@@ -33,6 +33,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2"
 
+	"go.riptides.io/tokenex/internal/httpx"
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
 	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
@@ -214,10 +215,7 @@ func (cp *credentialsProvider) refreshCredentialsLoop(
 	cfg *credentialsConfig,
 	credsChan chan credential.Result,
 ) {
-	httpClient := cfg.httpClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
+	httpClient := httpx.ExchangeClient(cfg.httpClient)
 
 	tracer := tokenextelemetry.Tracer(ctx, cfg.tracerProvider, instrumentationScopeName)
 	correlationID := uuid.NewString()
@@ -354,7 +352,7 @@ func exchangeToken(ctx context.Context, client *http.Client, cfg *credentialsCon
 
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := httpx.ReadBody(resp.Body, httpx.MaxTokenBody)
 	if err != nil {
 		return nil, errors.WrapIf(err, "could not read token response body")
 	}
@@ -363,10 +361,10 @@ func exchangeToken(ctx context.Context, client *http.Client, cfg *credentialsCon
 		var errResp errorResponse
 
 		if jsonErr := json.Unmarshal(respBody, &errResp); jsonErr == nil && errResp.Error != "" {
-			return nil, errors.Errorf("token endpoint error %d: %s — %s", resp.StatusCode, errResp.Error, errResp.ErrorDescription)
+			return nil, errors.Errorf("token endpoint error %d: %s — %s", resp.StatusCode, httpx.Snippet(errResp.Error), httpx.Snippet(errResp.ErrorDescription))
 		}
 
-		return nil, errors.Errorf("token endpoint returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, errors.Errorf("token endpoint returned status %d: %s", resp.StatusCode, httpx.Snippet(respBody))
 	}
 
 	var tokenResp tokenResponse

@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -394,4 +395,25 @@ func TestNewCredentialsProvider_InvalidURL(t *testing.T) {
 		_, err := NewCredentialsProvider(t.Context(), logr.Discard(), u, nil)
 		assert.Error(t, err, u)
 	}
+}
+
+// Following a redirect would repeat the JWT to the host it names.
+func TestGetCredentials_DoesNotFollowRedirects(t *testing.T) {
+	t.Parallel()
+
+	var followed atomic.Bool
+
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { followed.Store(true) }))
+	t.Cleanup(target.Close)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(srv.Close)
+
+	ch := startProvider(t, srv.URL, nil, WithVariables(map[string]string{usernameKey: usernameID}))
+
+	res := receive(t, ch)
+	require.ErrorContains(t, res.Err, "status 307")
+	require.False(t, followed.Load(), "the redirect was followed")
 }

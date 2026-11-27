@@ -104,6 +104,9 @@ func WithBodyFormat(format BodyFormat) option.Option {
 	})
 }
 
+// WithHTTPClient sets the client for token requests. Unless it sets its own
+// CheckRedirect and Timeout, redirects are not followed and a request times
+// out after 30 seconds.
 func WithHTTPClient(client *http.Client) option.Option {
 	return withCredentialsOption(func(c *credentialsConfig) {
 		c.httpClient = client

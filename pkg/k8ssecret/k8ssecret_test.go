@@ -184,7 +184,7 @@ func TestHandleEvent(t *testing.T) {
 			credsChan := make(chan Credential, 1)
 
 			cp.handleEvent(context.Background(), noop.NewTracerProvider().Tracer(""), nil,
-				credsChan, tc.secretRef, tc.obj, tc.del)
+				&subscription{ch: credsChan}, tc.secretRef, tc.obj, tc.del)
 
 			if tc.wantNone {
 				require.Empty(t, credsChan, "expected nothing to be published")
@@ -211,4 +211,22 @@ func TestHandleEvent(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The informer can still deliver an event after the subscription has ended.
+func TestEventAfterCloseIsDropped(t *testing.T) {
+	t.Parallel()
+
+	sub := &subscription{ch: make(chan Credential, 1)}
+	sub.close()
+
+	cp := &credentialsProvider{}
+
+	require.NotPanics(t, func() {
+		cp.handleEvent(t.Context(), noop.NewTracerProvider().Tracer(""), nil, sub, testSecretRef(),
+			testSecret(map[string][]byte{"apiKey": []byte("sk_live_x")}), false)
+	})
+
+	_, open := <-sub.ch
+	require.False(t, open)
 }

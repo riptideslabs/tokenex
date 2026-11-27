@@ -21,6 +21,7 @@ import (
 	toolscache "k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 
+	"go.riptides.io/tokenex/internal/httpx"
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
 	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
@@ -216,6 +217,9 @@ func (r *tokenRetriever) start(ctx context.Context) error {
 func (r *tokenRetriever) fetchToken(ctx context.Context, tracer trace.Tracer, configAttrs []attribute.KeyValue, ccCfg clientcredentials.Config) (*oauth2.Token, error) {
 	fetchCtx, span := tracer.Start(ctx, fetchSpanName, trace.WithAttributes(configAttrs...))
 	defer span.End()
+
+	fetchCtx, cancel := context.WithTimeout(fetchCtx, httpx.DefaultTimeout)
+	defer cancel()
 
 	token, err := ccCfg.Token(fetchCtx)
 	if err != nil {

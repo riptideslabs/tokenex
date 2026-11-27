@@ -13,7 +13,6 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
-	"io"
 	"maps"
 	"net/http"
 	"net/url"
@@ -27,6 +26,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"go.riptides.io/tokenex/internal/httpx"
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
 	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
@@ -44,6 +44,10 @@ type CredentialsProvider interface {
 }
 
 var _ CredentialsProvider = &credentialsProvider{}
+
+// minPollInterval keeps the variables from being read, with a new login each
+// time, in a tight loop.
+const minPollInterval = time.Second
 
 type credentialsConfig struct {
 	account               string
@@ -83,6 +87,13 @@ func validateConfig(cfg *credentialsConfig) error {
 		return errors.New("service ID is required")
 	}
 
+	// Each is one segment of the authentication URL, where these would step out of it.
+	for _, segment := range []string{cfg.account, cfg.serviceID} {
+		if segment == "." || segment == ".." {
+			return errors.New("account and service ID must not be . or ..")
+		}
+	}
+
 	if len(cfg.variables) == 0 {
 		return errors.New("at least one variable is required")
 	}
@@ -102,8 +113,8 @@ func validateConfig(cfg *credentialsConfig) error {
 		}
 	}
 
-	if cfg.pollInterval <= 0 {
-		return errors.New("poll interval must be greater than zero")
+	if cfg.pollInterval < minPollInterval {
+		return errors.NewWithDetails("poll interval is too short", "minimum", minPollInterval)
 	}
 
 	if cfg.identityTokenProvider == nil {
@@ -161,13 +172,13 @@ func (cp *credentialsProvider) authenticate(ctx context.Context, cfg *credential
 
 	defer resp.Body.Close()
 
-	accessToken, err := io.ReadAll(resp.Body)
+	accessToken, err := httpx.ReadBody(resp.Body, httpx.MaxTokenBody)
 	if err != nil {
 		return "", errors.WrapIf(err, "could not read authentication response body")
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", errors.Errorf("failed to authenticate with Conjur, status %d: %s", resp.StatusCode, accessToken)
+		return "", errors.Errorf("failed to authenticate with Conjur, status %d: %s", resp.StatusCode, httpx.Snippet(accessToken))
 	}
 
 	if len(accessToken) == 0 {
@@ -204,13 +215,13 @@ func (cp *credentialsProvider) retrieveVariables(ctx context.Context, cfg *crede
 
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := httpx.ReadBody(resp.Body, httpx.MaxSecretBody)
 	if err != nil {
 		return nil, errors.WrapIf(err, "could not read secrets response body")
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, errors.Errorf("failed to retrieve variables, status %d: %s", resp.StatusCode, body)
+		return nil, errors.Errorf("failed to retrieve variables, status %d: %s", resp.StatusCode, httpx.Snippet(body))
 	}
 
 	var byFullID map[string]string
@@ -343,7 +354,7 @@ func NewCredentialsProvider(_ context.Context, logger logr.Logger, applianceURL 
 	return &credentialsProvider{
 		logger:       logger.WithName("conjur_credentials"),
 		applianceURL: strings.TrimSuffix(applianceURL, "/"),
-		httpClient:   &http.Client{Transport: transport, Timeout: 30 * time.Second},
+		httpClient:   &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: httpx.NoRedirect},
 	}, nil
 }
 

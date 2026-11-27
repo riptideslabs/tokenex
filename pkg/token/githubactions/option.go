@@ -59,7 +59,8 @@ func WithRequestToken(requestToken string) option.Option {
 	})
 }
 
-// WithHTTPClient sets the HTTP client used for token requests. Defaults to http.DefaultClient.
+// WithHTTPClient sets the HTTP client used for token requests. Unless it sets
+// its own Timeout, a request times out after 30 seconds.
 func WithHTTPClient(client *http.Client) option.Option {
 	return withProviderOption(func(c *providerConfig) {
 		c.httpClient = client

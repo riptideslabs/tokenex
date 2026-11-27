@@ -5,6 +5,7 @@ package vault
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"emperror.dev/errors"
@@ -16,6 +17,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"go.riptides.io/tokenex/internal/expiry"
+	"go.riptides.io/tokenex/internal/httpx"
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
 	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
@@ -25,6 +28,15 @@ import (
 
 // ErrDataNotFound is returned when secret at a the specified secret path does not exist in Vault.
 var ErrDataNotFound = errors.New("data not found")
+
+const (
+	// requestTimeout bounds one Vault request, as api.DefaultConfig does.
+	requestTimeout = 60 * time.Second
+
+	// minPollInterval keeps a secret from being read, with a new login each
+	// time, in a tight loop.
+	minPollInterval = time.Second
+)
 
 // gcpCredentialConfig holds configuration specific to GCP credentials returned by the Google Cloud secrets engine in Vault.
 type gcpCredentialConfig struct {
@@ -36,6 +48,9 @@ type gcpCredentialConfig struct {
 	// This option is used only when exchangeSAKeyForAccessToken is true.
 	// If not set, it defaults to ["https://www.googleapis.com/auth/cloud-platform"].
 	accessTokenScopes []string
+
+	// universeDomain allows the token endpoint of another Google Cloud universe, oauth2.<universeDomain>.
+	universeDomain string
 }
 
 func (g *gcpCredentialConfig) ExchangeSAKeyForAccessToken() bool {
@@ -158,6 +173,13 @@ func validateConfig(cfg *credentialsConfig) error {
 		return errors.New("JWT auth method path is required")
 	}
 
+	// The path is joined into the login URL, where a dot segment would leave auth/.
+	for segment := range strings.SplitSeq(cfg.jwtAuthMethodPath, "/") {
+		if segment == "." || segment == ".." {
+			return errors.New("JWT auth method path must not contain . or .. segments")
+		}
+	}
+
 	if cfg.jwtAuthRoleName == "" {
 		return errors.New("JWT Auth role is required")
 	}
@@ -166,8 +188,8 @@ func validateConfig(cfg *credentialsConfig) error {
 		return errors.New("secret path is required")
 	}
 
-	if cfg.pollInterval <= 0 {
-		return errors.New("poll interval must be greater than zero")
+	if cfg.pollInterval < minPollInterval {
+		return errors.NewWithDetails("poll interval is too short", "minimum", minPollInterval)
 	}
 
 	if cfg.identityTokenProvider == nil {
@@ -273,7 +295,7 @@ func (cp *credentialsProvider) retrieveCredentials(ctx context.Context, cfg *cre
 	// If LeaseID is present, this is a dynamic credential (e.g., database, cloud secret).
 	// Set expiration based on the lease duration returned by Vault.
 	if secret.LeaseID != "" {
-		expiresAt = time.Now().Add(time.Duration(secret.LeaseDuration) * time.Second)
+		expiresAt = expiry.In(int64(secret.LeaseDuration))
 
 		return &credentialData{
 			Data:      secret.Data,
@@ -327,7 +349,7 @@ func fetchCredentials(ctx context.Context, tracer trace.Tracer, configAttrs []at
 }
 
 // startGcpAccessTokenProvider starts a worker goroutine that exchanges a GCP service account key for an access token and refreshes it as needed until the context is canceled.
-func (cp *credentialsProvider) startGcpAccessTokenProvider(ctx context.Context, tracer trace.Tracer, parentSpanContext trace.SpanContext, secretData map[string]any, scopes []string) (<-chan credential.Result, error) {
+func (cp *credentialsProvider) startGcpAccessTokenProvider(ctx context.Context, tracer trace.Tracer, parentSpanContext trace.SpanContext, secretData map[string]any, gcp *gcpCredentialConfig) (<-chan credential.Result, error) {
 	var serviceAccountKeySecret gcpServiceAccountKeySecret
 	if err := mapstructure.Decode(secretData, &serviceAccountKeySecret); err != nil {
 		return nil, errors.WrapIf(err, "failed to decode Vault secret data into GCP service account key credentials structure")
@@ -338,6 +360,11 @@ func (cp *credentialsProvider) startGcpAccessTokenProvider(ctx context.Context, 
 		return nil, errors.WrapIf(err, "failed to get service account key JSON")
 	}
 
+	if err := checkGCPTokenURI(keyJSON, gcp.universeDomain); err != nil {
+		return nil, err
+	}
+
+	scopes := gcp.accessTokenScopes
 	if len(scopes) == 0 {
 		scopes = []string{"https://www.googleapis.com/auth/cloud-platform"}
 	}
@@ -398,7 +425,7 @@ func (cp *credentialsProvider) startWorker(ctx context.Context, tracer trace.Tra
 		// get access token using the service account key data in the Vault secret
 		// and send the access token through the channel instead of the raw service account key data
 		ctx, cancel := context.WithCancel(ctx)
-		credsChan, err := cp.startGcpAccessTokenProvider(ctx, tracer, parentSpanContext, credsData, cfg.gcp.accessTokenScopes)
+		credsChan, err := cp.startGcpAccessTokenProvider(ctx, tracer, parentSpanContext, credsData, cfg.gcp)
 		if err != nil {
 			return nil, cancel, errors.WrapIf(err, "failed to start GCP access token provider")
 		}
@@ -533,6 +560,7 @@ func NewCredentialsProvider(ctx context.Context, logger logr.Logger, vaultAddr s
 
 	config := &api.Config{
 		Address: vaultAddr,
+		Timeout: requestTimeout,
 	}
 
 	// Configure TLS if provided
@@ -546,6 +574,12 @@ func NewCredentialsProvider(ctx context.Context, logger logr.Logger, vaultAddr s
 	client, err := api.NewClient(config)
 	if err != nil {
 		return nil, errors.WrapIf(err, "failed to create Vault client")
+	}
+
+	// The client reads response bodies whole. A unix socket address keeps the
+	// plain transport, which the client needs to set the dialer.
+	if !strings.HasPrefix(vaultAddr, "unix://") {
+		config.HttpClient.Transport = httpx.LimitResponses(config.HttpClient.Transport, httpx.MaxSecretBody, httpx.MaxErrorBody)
 	}
 
 	return &credentialsProvider{

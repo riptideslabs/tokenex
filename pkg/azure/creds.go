@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"go.riptides.io/tokenex/internal/httpx"
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
 	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
@@ -83,6 +84,10 @@ func (cp *credentialsProvider) isAzure() {}
 func fetchCredentials(ctx context.Context, tracer trace.Tracer, configAttrs []attribute.KeyValue, cred *azidentity.ClientAssertionCredential, cfg *credentialsConfig) (azcore.AccessToken, error) {
 	fetchCtx, span := tracer.Start(ctx, fetchSpanName, trace.WithAttributes(configAttrs...))
 	defer span.End()
+
+	// The credential has no timeout of its own.
+	fetchCtx, cancel := context.WithTimeout(fetchCtx, httpx.DefaultTimeout)
+	defer cancel()
 
 	tok, err := cred.GetToken(fetchCtx, policy.TokenRequestOptions{
 		TenantID: cfg.tenantID,

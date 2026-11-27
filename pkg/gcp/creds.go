@@ -17,6 +17,7 @@ import (
 	google_option "google.golang.org/api/option"
 	stsv1 "google.golang.org/api/sts/v1"
 
+	"go.riptides.io/tokenex/internal/httpx"
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
 	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
@@ -97,6 +98,10 @@ func fetchAccessToken(
 	fetchCtx, span := tracer.Start(ctx, fetchSpanName, trace.WithAttributes(configAttrs...))
 	defer span.End()
 
+	// The Google API clients have no timeout of their own.
+	fetchCtx, cancel := context.WithTimeout(fetchCtx, httpx.DefaultTimeout)
+	defer cancel()
+
 	accessToken, err := genAccessTokenFunc(fetchCtx)
 	if err != nil {
 		err = errors.WrapIf(err, "failed to get access token")
@@ -131,16 +136,6 @@ func (cp *credentialsProvider) refreshCredentialsLoop(
 			return
 		}
 
-		// Send credentials
-		gcpCredential := credential.Oauth2Creds(*accessToken)
-		util.SendToChannel(credsChan, credential.Result{
-			Credential: &gcpCredential,
-			Err:        nil,
-			Event:      credential.UpdateEventType,
-		})
-
-		cp.logger.V(2).Info("Sent credentials", "expires", accessToken.Expiry)
-
 		// Calculate when to refresh
 		timeUntilExpiry := time.Until(accessToken.Expiry)
 
@@ -150,6 +145,16 @@ func (cp *credentialsProvider) refreshCredentialsLoop(
 
 			return
 		}
+
+		// Send credentials
+		gcpCredential := credential.Oauth2Creds(*accessToken)
+		util.SendToChannel(credsChan, credential.Result{
+			Credential: &gcpCredential,
+			Err:        nil,
+			Event:      credential.UpdateEventType,
+		})
+
+		cp.logger.V(2).Info("Sent credentials", "expires", accessToken.Expiry)
 
 		refreshBuffer := util.CalculateRefreshBuffer(timeUntilExpiry)
 		refreshTime := timeUntilExpiry - refreshBuffer

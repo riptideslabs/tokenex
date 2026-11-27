@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/go-github/v66/github"
 	"go.opentelemetry.io/otel/attribute"
+
+	"go.riptides.io/tokenex/internal/httpx"
 )
 
 const fetchSpanName = "credential.fetch"
@@ -18,7 +20,7 @@ func fetchSpanConfigAttrs(cfg *credentialsConfig, correlationID string) []attrib
 	return []attribute.KeyValue{
 		attribute.Int64("cfg.app_id", cfg.appID),
 		attribute.Int64("cfg.installation_id", cfg.installationID),
-		attribute.String("cfg.base_url", cfg.baseURL),
+		attribute.String("cfg.base_url", httpx.RedactURL(cfg.baseURL)),
 		attribute.String("correlation_id", correlationID),
 	}
 }

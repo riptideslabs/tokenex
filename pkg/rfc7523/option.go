@@ -84,8 +84,9 @@ func WithBodyFormat(f BodyFormat) option.Option {
 	})
 }
 
-// WithHTTPClient sets a custom HTTP client for token endpoint requests.
-// Defaults to http.DefaultClient when not provided.
+// WithHTTPClient sets the client for token endpoint requests. Unless it sets
+// its own CheckRedirect and Timeout, redirects are not followed and a request
+// times out after 30 seconds.
 func WithHTTPClient(client *http.Client) option.Option {
 	return withCredentialsOption(func(c *credentialsConfig) {
 		c.httpClient = client

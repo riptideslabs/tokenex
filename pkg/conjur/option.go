@@ -84,7 +84,7 @@ func WithIdentityTokenProvider(idtp token.IdentityTokenProvider) option.Option {
 }
 
 // WithPollInterval sets how often the variables are read again to pick up rotated values.
-// If not set, it defaults to 15 minutes.
+// If not set, it defaults to 15 minutes. The shortest accepted interval is one second.
 func WithPollInterval(d time.Duration) option.Option {
 	return withCredentialsOption(func(c *credentialsConfig) {
 		c.pollInterval = d

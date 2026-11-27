@@ -17,7 +17,6 @@ package rfc7523
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"maps"
 	"net/http"
 	"net/url"
@@ -31,6 +30,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2"
 
+	"go.riptides.io/tokenex/internal/expiry"
+	"go.riptides.io/tokenex/internal/httpx"
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
 	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
@@ -193,10 +194,7 @@ func (cp *credentialsProvider) refreshCredentialsLoop(
 	cfg *credentialsConfig,
 	credsChan chan credential.Result,
 ) {
-	httpClient := cfg.httpClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
+	httpClient := httpx.ExchangeClient(cfg.httpClient)
 
 	tracer := tokenextelemetry.Tracer(ctx, cfg.tracerProvider, instrumentationScopeName)
 	correlationID := uuid.NewString()
@@ -216,6 +214,14 @@ func (cp *credentialsProvider) refreshCredentialsLoop(
 			return
 		}
 
+		timeUntilExpiry := time.Until(tok.Expiry)
+
+		if !tok.Expiry.IsZero() && timeUntilExpiry <= 0 {
+			util.SendErrorToChannel(credsChan, errors.NewWithDetails("received already expired token", "expiresAt", tok.Expiry))
+
+			return
+		}
+
 		cred := credential.Oauth2Creds(*tok)
 
 		util.SendToChannel(credsChan, Credential{
@@ -228,14 +234,6 @@ func (cp *credentialsProvider) refreshCredentialsLoop(
 		if tok.Expiry.IsZero() {
 			// Token has no expiry — treat as valid until context is cancelled.
 			<-ctx.Done()
-
-			return
-		}
-
-		timeUntilExpiry := time.Until(tok.Expiry)
-
-		if timeUntilExpiry <= 0 {
-			util.SendErrorToChannel(credsChan, errors.NewWithDetails("received already expired token", "expiresAt", tok.Expiry))
 
 			return
 		}
@@ -326,7 +324,7 @@ func exchangeToken(ctx context.Context, client *http.Client, cfg *credentialsCon
 
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := httpx.ReadBody(resp.Body, httpx.MaxTokenBody)
 	if err != nil {
 		return nil, errors.WrapIf(err, "could not read token response body")
 	}
@@ -335,10 +333,10 @@ func exchangeToken(ctx context.Context, client *http.Client, cfg *credentialsCon
 		var errResp errorResponse
 
 		if jsonErr := json.Unmarshal(body, &errResp); jsonErr == nil && errResp.Error != "" {
-			return nil, errors.Errorf("token endpoint error %d: %s — %s", resp.StatusCode, errResp.Error, errResp.ErrorDescription)
+			return nil, errors.Errorf("token endpoint error %d: %s — %s", resp.StatusCode, httpx.Snippet(errResp.Error), httpx.Snippet(errResp.ErrorDescription))
 		}
 
-		return nil, errors.Errorf("token endpoint returned status %d: %s", resp.StatusCode, string(body))
+		return nil, errors.Errorf("token endpoint returned status %d: %s", resp.StatusCode, httpx.Snippet(body))
 	}
 
 	var tokenResp tokenResponse
@@ -351,14 +349,9 @@ func exchangeToken(ctx context.Context, client *http.Client, cfg *credentialsCon
 		return nil, errors.New("token endpoint returned empty access_token")
 	}
 
-	tok := &oauth2.Token{
+	return &oauth2.Token{
 		AccessToken: tokenResp.AccessToken,
 		TokenType:   tokenResp.TokenType,
-	}
-
-	if tokenResp.ExpiresIn > 0 {
-		tok.Expiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
-	}
-
-	return tok, nil
+		Expiry:      expiry.FromResponse(tokenResp.ExpiresIn, tokenResp.AccessToken),
+	}, nil
 }

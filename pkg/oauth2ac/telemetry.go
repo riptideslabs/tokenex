@@ -8,6 +8,8 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"golang.org/x/oauth2"
+
+	"go.riptides.io/tokenex/internal/httpx"
 )
 
 const fetchSpanName = "credential.fetch"
@@ -17,8 +19,8 @@ const instrumentationScopeName = "go.riptides.io/tokenex/pkg/oauth2ac"
 func exchangeSpanConfigAttrs(cfg *CredentialsConfig, clientID string, correlationID string) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.String("cfg.grant_type", "authorization_code"),
-		attribute.String("cfg.authorization_endpoint_url", cfg.AuthorizationEndpointURL),
-		attribute.String("cfg.token_endpoint_url", cfg.TokenEndpointURL),
+		attribute.String("cfg.authorization_endpoint_url", httpx.RedactURL(cfg.AuthorizationEndpointURL)),
+		attribute.String("cfg.token_endpoint_url", httpx.RedactURL(cfg.TokenEndpointURL)),
 		attribute.StringSlice("cfg.scopes", cfg.Scopes),
 		attribute.Bool("cfg.use_pkce", cfg.UsePKCE),
 		attribute.String("cfg.client_id", clientID),
@@ -29,7 +31,7 @@ func exchangeSpanConfigAttrs(cfg *CredentialsConfig, clientID string, correlatio
 func fetchSpanConfigAttrs(cfg *CredentialsConfig, clientID string, correlationID string) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.String("cfg.grant_type", "refresh_token"),
-		attribute.String("cfg.token_endpoint_url", cfg.TokenEndpointURL),
+		attribute.String("cfg.token_endpoint_url", httpx.RedactURL(cfg.TokenEndpointURL)),
 		attribute.StringSlice("cfg.scopes", cfg.Scopes),
 		attribute.String("cfg.client_id", clientID),
 		attribute.String("correlation_id", correlationID),

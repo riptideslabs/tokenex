@@ -18,7 +18,6 @@ require (
 	github.com/openbao/openbao/api/v2 v2.5.0
 	github.com/spiffe/go-spiffe/v2 v2.9.0
 	github.com/stretchr/testify v1.12.1
-	github.com/werbenhu/eventbus v1.0.8
 	golang.org/x/oauth2 v0.36.0
 	google.golang.org/api v0.264.0
 	google.golang.org/protobuf v1.36.12

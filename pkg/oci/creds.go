@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"go.riptides.io/tokenex/internal/httpx"
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
 	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
@@ -72,8 +72,14 @@ func validateConfig(cfg *credentialsConfig) error {
 		return errors.New("identityDomainURL is required")
 	}
 
-	if _, err := url.Parse(cfg.identityDomainURL); err != nil {
+	// The ID token and the client secret are posted to this URL.
+	u, err := url.Parse(cfg.identityDomainURL)
+	if err != nil {
 		return errors.WrapIf(err, "identityDomainURL is invalid")
+	}
+
+	if u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("identityDomainURL must be an https URL without user info, query or fragment")
 	}
 
 	if cfg.rsaPubKeyDer == nil {
@@ -306,7 +312,8 @@ func exchangeToken(
 	publicKey string,
 ) (*jwt.Token, error) {
 	client := &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout:       10 * time.Second,
+		CheckRedirect: httpx.NoRedirect,
 	}
 
 	req, err := buildTokenExchangeRequest(
@@ -327,13 +334,13 @@ func exchangeToken(
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := httpx.ReadBody(resp.Body, httpx.MaxTokenBody)
 	if err != nil {
 		return nil, errors.WrapIf(err, "failed to read token exchange response body")
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, errors.NewWithDetails("token exchange request failed", "status", resp.Status, "statusCode", resp.StatusCode, "err_response", string(body))
+		return nil, errors.NewWithDetails("token exchange request failed", "status", resp.Status, "statusCode", resp.StatusCode, "err_response", httpx.Snippet(body))
 	}
 
 	var respJSON struct {

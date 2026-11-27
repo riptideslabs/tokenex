@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"go.riptides.io/tokenex/internal/httpx"
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
 	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
@@ -82,11 +83,15 @@ func fetchCredentials(ctx context.Context, tracer trace.Tracer, configAttrs []at
 	fetchCtx, span := tracer.Start(ctx, fetchSpanName, trace.WithAttributes(configAttrs...))
 	defer span.End()
 
+	// The STS client has no timeout of its own.
+	fetchCtx, cancel := context.WithTimeout(fetchCtx, httpx.DefaultTimeout)
+	defer cancel()
+
 	// we need to store current ctx as provider.Retrieve(fetchCtx) invoked below
 	// doesn't pass the fetch to TokenRetriever.GetIdentityToken()
 	retriever.ctx.Store(fetchCtx)
 
-	awsCreds, err := provider.Retrieve(fetchCtx)
+	awsCreds, err := retrieve(fetchCtx, provider)
 	if err != nil {
 		err = errors.WrapIf(err, "failed to retrieve credentials")
 		tokenextelemetry.RecordResult(span, err)
@@ -98,6 +103,18 @@ func fetchCredentials(ctx context.Context, tracer trace.Tracer, configAttrs []at
 	tokenextelemetry.RecordResult(span, nil)
 
 	return awsCreds, nil
+}
+
+// retrieve calls the provider, which panics on a response without credentials.
+// The panic becomes an error, as nothing above the refresh loop would catch it.
+func retrieve(ctx context.Context, provider *stscreds.WebIdentityRoleProvider) (_ aws.Credentials, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = errors.Errorf("credentials provider panicked: %v", r)
+		}
+	}()
+
+	return provider.Retrieve(ctx)
 }
 
 // refreshCredentialsLoop handles the credential retrieval and refresh loop.
@@ -137,6 +154,16 @@ func (cp *credentialsProvider) refreshCredentialsLoop(ctx context.Context, cfg *
 			return
 		}
 
+		// Calculate when to refresh
+		timeUntilExpiry := time.Until(awsCreds.Expires)
+
+		// If credentials are already expired, this is an error
+		if awsCreds.CanExpire && timeUntilExpiry <= 0 {
+			util.SendErrorToChannel(credsChan, errors.NewWithDetails("received already expired credentials", "expiresAt", awsCreds.Expires))
+
+			return
+		}
+
 		// Send credentials
 		creds := credential.AWSCreds(awsCreds)
 		util.SendToChannel(credsChan, credential.Result{
@@ -156,16 +183,6 @@ func (cp *credentialsProvider) refreshCredentialsLoop(ctx context.Context, cfg *
 		}
 
 		cp.logger.V(2).Info("Sent credentials", "expires", awsCreds.Expires)
-
-		// Calculate when to refresh
-		timeUntilExpiry := time.Until(awsCreds.Expires)
-
-		// If credentials are already expired, this is an error
-		if timeUntilExpiry <= 0 {
-			util.SendErrorToChannel(credsChan, errors.NewWithDetails("received already expired credentials", "expiresAt", awsCreds.Expires))
-
-			return
-		}
 
 		refreshBuffer := util.CalculateRefreshBuffer(timeUntilExpiry)
 		refreshTime := timeUntilExpiry - refreshBuffer

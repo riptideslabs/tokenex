@@ -6,6 +6,9 @@ package vault
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -18,6 +21,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
+	"go.riptides.io/tokenex/internal/httpx"
 	"go.riptides.io/tokenex/pkg/credential"
 	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
 	"go.riptides.io/tokenex/pkg/util"
@@ -55,6 +59,47 @@ func (s *gcpServiceAccountKeySecret) ServiceAccountKeyJSON() ([]byte, error) {
 	return key, nil
 }
 
+// gcpTokenHosts are the hosts of Google's OAuth 2.0 token endpoints outside googleapis.com.
+var gcpTokenHosts = []string{"accounts.google.com"}
+
+// isGCPTokenHost accepts Google's token hosts: any googleapis.com host, which
+// covers regional and Private Service Connect endpoints, and oauth2.<domain>
+// for the universe domain the caller allowed. The key names its own universe
+// domain too, but the key is what is being checked.
+func isGCPTokenHost(host, universeDomain string) bool {
+	host = strings.ToLower(host)
+
+	if host == "googleapis.com" || strings.HasSuffix(host, ".googleapis.com") || slices.Contains(gcpTokenHosts, host) {
+		return true
+	}
+
+	return universeDomain != "" && host == "oauth2."+strings.ToLower(universeDomain)
+}
+
+// checkGCPTokenURI rejects a service account key whose token_uri is not one
+// of Google's, or of the universe domain the caller allowed. The key comes
+// from the Vault secret, and the signed assertion is sent to that URI.
+func checkGCPTokenURI(keyJSON []byte, universeDomain string) error {
+	var key struct {
+		TokenURI string `json:"token_uri"`
+	}
+
+	if err := json.Unmarshal(keyJSON, &key); err != nil {
+		return errors.WrapIf(err, "service account key is not valid JSON")
+	}
+
+	if key.TokenURI == "" {
+		return nil
+	}
+
+	u, err := url.Parse(key.TokenURI)
+	if err != nil || u.Scheme != "https" || (u.Port() != "" && u.Port() != "443") || !isGCPTokenHost(u.Hostname(), universeDomain) {
+		return errors.NewWithDetails("token_uri of the service account key is not a Google token endpoint", "token_uri", httpx.RedactURL(key.TokenURI))
+	}
+
+	return nil
+}
+
 // gcpAccessTokenProvider is responsible for exchanging a GCP service account key for an access token and refreshing it as needed until stopped.
 type gcpAccessTokenProvider struct {
 	serviceAccountKeyJSON []byte
@@ -67,6 +112,10 @@ type gcpAccessTokenProvider struct {
 func (r *gcpAccessTokenProvider) fetchAccessToken(ctx context.Context, parentSpanContext trace.SpanContext, configAttrs []attribute.KeyValue) (*oauth2.Token, error) {
 	fetchCtx, span := r.tracer.Start(ctx, gcpExchangeSpanName, trace.WithAttributes(configAttrs...), trace.WithLinks(trace.Link{SpanContext: parentSpanContext}))
 	defer span.End()
+
+	// The token source takes its HTTP client from the context. The default one
+	// has no timeout and follows redirects.
+	fetchCtx = context.WithValue(fetchCtx, oauth2.HTTPClient, httpx.ExchangeClient(nil))
 
 	// use the service account key to authenticate to GCP and obtain an access token
 	gcpCreds, err := google.CredentialsFromJSONWithType(fetchCtx, r.serviceAccountKeyJSON, google.ServiceAccount, r.scopes...)

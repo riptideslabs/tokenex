@@ -43,7 +43,7 @@ tidy: ## Execute go mod tidy
 	GOPRIVATE=${GOPRIVATE} go mod download all
 
 ${BIN_DIR}/golangci-lint-${GOLANGCI_VERSION}:
-	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | bash -s v${GOLANGCI_VERSION}
+	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/v${GOLANGCI_VERSION}/install.sh | bash -s v${GOLANGCI_VERSION}
 	@mv ${BIN_DIR}/golangci-lint $@
 
 ${BIN_DIR}/golangci-lint: ${BIN_DIR}/golangci-lint-${GOLANGCI_VERSION}
@@ -63,7 +63,7 @@ ${BIN_DIR}/licensei: ${BIN_DIR}/licensei-${LICENSEI_VERSION}
 	@ln -sf licensei-${LICENSEI_VERSION} ${BIN_DIR}/licensei
 
 ${BIN_DIR}/licensei-${LICENSEI_VERSION}:
-	curl -sfL git.io/licensei | bash -s v${LICENSEI_VERSION}
+	curl -sfL https://raw.githubusercontent.com/goph/licensei/v${LICENSEI_VERSION}/install.sh | bash -s v${LICENSEI_VERSION}
 	mv ${BIN_DIR}/licensei $@
 
 .PHONY: license-check
@@ -80,7 +80,7 @@ ${REPO_ROOT}/bin/licsensei: ${REPO_ROOT}/bin/licsensei-${LICSENSEI_VERSION}
 ${REPO_ROOT}/bin/licsensei-${LICSENSEI_VERSION}:
 	@mkdir -p ${REPO_ROOT}/bin
 	@mkdir -p bin
-	curl -sfL https://raw.githubusercontent.com/gezacorp/licsensei/main/install.sh | bash -s v${LICSENSEI_VERSION}
+	curl -sfL https://raw.githubusercontent.com/gezacorp/licsensei/v${LICSENSEI_VERSION}/install.sh | bash -s v${LICSENSEI_VERSION}
 	mv bin/licsensei $@
 
 .PHONY: license-header-check

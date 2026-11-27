@@ -86,7 +86,7 @@ func WithIdentityTokenProvider(idtp token.IdentityTokenProvider) option.Option {
 }
 
 // WithPollInterval sets the interval at which to poll Vault secrets for updates in case the secret has either no lease or TTL expiration.
-// If not set, the default polling interval is 15 minutes.
+// If not set, the default polling interval is 15 minutes. The shortest accepted interval is one second.
 // This option is useful for secrets that do not have automatic renewal mechanisms such as the secrets stored in Vault's KV secrets engine.
 func WithPollInterval(d time.Duration) option.Option {
 	return withCredentialsOption(func(c *credentialsConfig) {
@@ -123,6 +123,18 @@ func WithGCPServiceAccountKeyExchangeScopes(scopes []string) option.Option {
 			c.gcp = &gcpCredentialConfig{}
 		}
 		c.gcp.accessTokenScopes = scopes
+	})
+}
+
+// WithGCPUniverseDomain allows service account keys of another Google Cloud universe, whose token endpoint is https://oauth2.<domain>/.
+// Without it only Google's own token endpoints are accepted, whatever universe a key names.
+// This option is only applicable if WithGCPServiceAccountKeyExchange is enabled.
+func WithGCPUniverseDomain(domain string) option.Option {
+	return withCredentialsOption(func(c *credentialsConfig) {
+		if c.gcp == nil {
+			c.gcp = &gcpCredentialConfig{}
+		}
+		c.gcp.universeDomain = domain
 	})
 }
 

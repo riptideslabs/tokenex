@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"go.riptides.io/tokenex/internal/httpx"
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
 	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
@@ -167,14 +168,18 @@ func newAppClient(cfg *credentialsConfig) (*github.Client, error) {
 		base = http.DefaultTransport
 	}
 
-	httpClient := &http.Client{
-		Transport: &appJWTTransport{
+	// The transport signs every request, so a followed redirect would carry
+	// the App JWT to another host. go-github reads response bodies itself, so
+	// the transport limits them.
+	httpClient := httpx.WithTimeout(&http.Client{
+		Transport: httpx.LimitResponses(&appJWTTransport{
 			base:       base,
 			appID:      cfg.appID,
 			privateKey: cfg.privateKey,
-		},
-		Timeout: cfg.httpClient.Timeout,
-	}
+		}, httpx.MaxSecretBody, httpx.MaxErrorBody),
+		Timeout:       cfg.httpClient.Timeout,
+		CheckRedirect: httpx.NoRedirect,
+	})
 
 	client := github.NewClient(httpClient)
 

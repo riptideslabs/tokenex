@@ -12,36 +12,55 @@ import (
 
 // CalculateRefreshBuffer calculates how long before credential expiry we should refresh.
 // It returns 20% of the time until expiry, with a minimum of 1 minute and maximum of 5 minutes.
+// A lifetime of two minutes or less gets the plain 20%, as the minimum would eat most of it.
 // A random jitter of up to 10% is added to prevent thundering herd issues.
 func CalculateRefreshBuffer(timeUntilExpiry time.Duration) time.Duration {
-	// Use 20% of remaining time as refresh buffer
-	buffer := timeUntilExpiry / 5
-
-	if timeUntilExpiry <= time.Minute*2 {
+	if timeUntilExpiry <= 0 {
 		return 0
 	}
 
-	// Enforce minimum of 1 minute and cap at 5
-	buffer = min(max(buffer, time.Minute*1), time.Minute*5)
+	// Use 20% of remaining time as refresh buffer
+	buffer := timeUntilExpiry / 5
+
+	if timeUntilExpiry > time.Minute*2 {
+		// Enforce minimum of 1 minute and cap at 5
+		buffer = min(max(buffer, time.Minute*1), time.Minute*5)
+	}
 
 	// Add jitter: up to 10% of the buffer duration
 	// This prevents multiple instances from refreshing at exactly the same time
-	jitterFraction := 0.1
-	maxJitter := float64(buffer) * jitterFraction
-	jitter := time.Duration(rand.Int63n(int64(maxJitter))) //nolint: gosec
+	maxJitter := int64(buffer / 10)
+	if maxJitter <= 0 {
+		return buffer
+	}
+
+	jitter := time.Duration(rand.Int63n(maxJitter)) //nolint: gosec
 
 	return buffer + jitter
 }
 
 // SendToChannel writes the credential.Result to the channel, ensuring the latest result is always available.
+// credsChan should be buffered; on an unbuffered one the send waits for the consumer.
 func SendToChannel(credsChan chan credential.Result, result credential.Result) {
-	select {
-	case credsChan <- result:
-		// Successfully wrote to the channel
-	default:
-		// Channel is full, read and discard the old value
-		<-credsChan
+	if cap(credsChan) == 0 {
 		credsChan <- result
+
+		return
+	}
+
+	for {
+		select {
+		case credsChan <- result:
+			return
+		default:
+		}
+
+		// Channel is full: discard the old value, unless the consumer took it
+		// in the meantime. Waiting for it here would block forever.
+		select {
+		case <-credsChan:
+		default:
+		}
 	}
 }
 

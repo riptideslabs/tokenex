@@ -63,3 +63,26 @@ func TestCalculateRefreshBufferOfShortLifetime(t *testing.T) {
 	assert.Zero(t, util.CalculateRefreshBuffer(0))
 	assert.Zero(t, util.CalculateRefreshBuffer(-time.Minute))
 }
+
+// On an unbuffered channel the send waits for the consumer instead of spinning.
+func TestSendToChannelUnbuffered(t *testing.T) {
+	t.Parallel()
+
+	ch := make(chan credential.Result)
+	sent := make(chan struct{})
+
+	go func() {
+		defer close(sent)
+
+		util.SendToChannel(ch, credential.Result{Event: credential.UpdateEventType})
+	}()
+
+	select {
+	case <-sent:
+		t.Fatal("sent without a consumer")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	assert.Equal(t, credential.UpdateEventType, (<-ch).Event)
+	<-sent
+}

@@ -10,6 +10,8 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -20,6 +22,8 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/go-github/v66/github"
+
+	"go.riptides.io/tokenex/internal/httpx"
 )
 
 func mustGenerateKey(t *testing.T) *rsa.PrivateKey {
@@ -394,5 +398,30 @@ func TestAppClientDoesNotFollowRedirects(t *testing.T) {
 
 	if followed.Load() {
 		t.Fatalf("the redirect was followed")
+	}
+}
+
+// go-github reads a response body whole, whatever its size.
+func TestAppClientLimitsResponseBodies(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		io.WriteString(w, `{"token":"`+strings.Repeat("x", httpx.MaxSecretBody)+`"}`) //nolint:errcheck
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := &credentialsConfig{appID: 1, installationID: 2, privateKey: mustGenerateKey(t), baseURL: srv.URL}
+	setDefaults(cfg)
+
+	client, err := newAppClient(cfg)
+	if err != nil {
+		t.Fatalf("newAppClient: %v", err)
+	}
+
+	_, _, err = client.Apps.CreateInstallationToken(t.Context(), cfg.installationID, nil)
+	if !errors.Is(err, httpx.ErrBodyTooLarge) {
+		t.Fatalf("err = %v; want the body limit", err)
 	}
 }

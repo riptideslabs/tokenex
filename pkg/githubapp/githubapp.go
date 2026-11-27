@@ -169,13 +169,14 @@ func newAppClient(cfg *credentialsConfig) (*github.Client, error) {
 	}
 
 	// The transport signs every request, so a followed redirect would carry
-	// the App JWT to another host.
+	// the App JWT to another host. go-github reads response bodies itself, so
+	// the transport limits them.
 	httpClient := httpx.WithTimeout(&http.Client{
-		Transport: &appJWTTransport{
+		Transport: httpx.LimitResponses(&appJWTTransport{
 			base:       base,
 			appID:      cfg.appID,
 			privateKey: cfg.privateKey,
-		},
+		}, httpx.MaxSecretBody, httpx.MaxErrorBody),
 		Timeout:       cfg.httpClient.Timeout,
 		CheckRedirect: httpx.NoRedirect,
 	})

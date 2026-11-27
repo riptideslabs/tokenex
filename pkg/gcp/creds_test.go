@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 	"golang.org/x/oauth2"
 
+	"go.riptides.io/tokenex/internal/httpx"
 	"go.riptides.io/tokenex/pkg/credential"
 )
 
@@ -44,4 +45,25 @@ func TestExpiredTokenIsNotPublished(t *testing.T) {
 	require.Len(t, got, 1)
 	require.Error(t, got[0].Err)
 	assert.Nil(t, got[0].Credential)
+}
+
+// The Google API clients have no timeout, so the fetch context carries one.
+func TestFetchHasDeadline(t *testing.T) {
+	t.Parallel()
+
+	var left time.Duration
+
+	_, err := fetchAccessToken(t.Context(), noop.NewTracerProvider().Tracer("test"), nil,
+		func(ctx context.Context) (*oauth2.Token, error) {
+			deadline, ok := ctx.Deadline()
+			if ok {
+				left = time.Until(deadline)
+			}
+
+			return &oauth2.Token{AccessToken: "at"}, nil
+		}, false)
+	require.NoError(t, err)
+
+	assert.Positive(t, left)
+	assert.LessOrEqual(t, left, httpx.DefaultTimeout)
 }

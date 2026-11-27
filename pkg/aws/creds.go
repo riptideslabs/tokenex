@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"go.riptides.io/tokenex/internal/httpx"
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
 	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
@@ -81,6 +82,10 @@ func (cp *credentialsProvider) isAWS() {}
 func fetchCredentials(ctx context.Context, tracer trace.Tracer, configAttrs []attribute.KeyValue, provider *stscreds.WebIdentityRoleProvider, retriever *tokenRetriever) (aws.Credentials, error) {
 	fetchCtx, span := tracer.Start(ctx, fetchSpanName, trace.WithAttributes(configAttrs...))
 	defer span.End()
+
+	// The STS client has no timeout of its own.
+	fetchCtx, cancel := context.WithTimeout(fetchCtx, httpx.DefaultTimeout)
+	defer cancel()
 
 	// we need to store current ctx as provider.Retrieve(fetchCtx) invoked below
 	// doesn't pass the fetch to TokenRetriever.GetIdentityToken()

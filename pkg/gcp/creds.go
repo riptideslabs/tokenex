@@ -17,6 +17,7 @@ import (
 	google_option "google.golang.org/api/option"
 	stsv1 "google.golang.org/api/sts/v1"
 
+	"go.riptides.io/tokenex/internal/httpx"
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
 	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
@@ -96,6 +97,10 @@ func fetchAccessToken(
 ) (*oauth2.Token, error) {
 	fetchCtx, span := tracer.Start(ctx, fetchSpanName, trace.WithAttributes(configAttrs...))
 	defer span.End()
+
+	// The Google API clients have no timeout of their own.
+	fetchCtx, cancel := context.WithTimeout(fetchCtx, httpx.DefaultTimeout)
+	defer cancel()
 
 	accessToken, err := genAccessTokenFunc(fetchCtx)
 	if err != nil {

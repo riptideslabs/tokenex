@@ -23,9 +23,11 @@ func In(seconds int64) time.Time {
 }
 
 // FromResponse returns the expiry of an access token issued with expiresIn. A
-// negative expiresIn gives a time in the past. Without an expiresIn the exp
-// claim of a JWT access token is used; the token is not verified, the claim
-// only sets the refresh time. The zero time means that no expiry is known.
+// negative expiresIn gives a time in the past. Zero means that the response
+// gave no lifetime, whether it left expires_in out or sent 0, as in
+// golang.org/x/oauth2. Then the exp claim of a JWT access token is used; the
+// token is not verified, the claim only sets the refresh time, and nothing is
+// authorized by it. The zero time means that no expiry is known.
 func FromResponse(expiresIn int64, accessToken string) time.Time {
 	if expiresIn != 0 {
 		return In(expiresIn)

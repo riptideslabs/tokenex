@@ -625,6 +625,7 @@ func (cp *credentialsProvider) tokenRefresherLoop(ctx context.Context) {
 		var refreshTimer <-chan time.Time
 
 		refreshTime = 0
+		expired := false
 
 		if !accessToken.Expiry.IsZero() {
 			timeUntilExpiry := time.Until(accessToken.Expiry)
@@ -632,6 +633,7 @@ func (cp *credentialsProvider) tokenRefresherLoop(ctx context.Context) {
 			refreshTime = timeUntilExpiry - refreshBuffer
 			// An expiry in the past must not turn the loop into a busy one.
 			if refreshTime <= 0 {
+				expired = true
 				refreshTime = minRefreshInterval
 			}
 
@@ -640,7 +642,15 @@ func (cp *credentialsProvider) tokenRefresherLoop(ctx context.Context) {
 			cp.logger.Info("scheduling credential refresh", "refreshIn", refreshTime, "refreshBuffer", refreshBuffer, "expiresAt", accessToken.Expiry)
 		}
 
-		cp.publishAccessToken(accessToken)
+		// An already expired token is reported, not handed out.
+		if expired {
+			cp.publishCredential(Credential{
+				Event: credential.UpdateEventType,
+				Err:   errors.NewWithDetails("received already expired token", "expiresAt", accessToken.Expiry),
+			})
+		} else {
+			cp.publishAccessToken(accessToken)
+		}
 
 		select {
 		case <-cp.refreshCh:

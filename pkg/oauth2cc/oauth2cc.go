@@ -279,6 +279,16 @@ func (r *tokenRetriever) tokenRefresherLoop(ctx context.Context) {
 			return
 		}
 
+		// Calculate when to refresh
+		timeUntilExpiry := time.Until(token.Expiry)
+
+		// If credentials are already expired, this is an error
+		if !token.Expiry.IsZero() && timeUntilExpiry <= 0 {
+			util.SendErrorToChannel(r.ch, errors.NewWithDetails("received already expired token", "expiresAt", token.Expiry))
+
+			return
+		}
+
 		cred := credential.Oauth2Creds(*token)
 
 		util.SendToChannel(r.ch, Credential{
@@ -289,22 +299,22 @@ func (r *tokenRetriever) tokenRefresherLoop(ctx context.Context) {
 
 		logr.FromContextOrDiscard(ctx).V(1).Info("token sent", "expires", token.Expiry)
 
-		// Calculate when to refresh
-		timeUntilExpiry := time.Until(token.Expiry)
+		// A token without an expiry is refreshed only when the client
+		// credentials change: a nil channel never fires.
+		var (
+			timer   *time.Timer
+			timerCh <-chan time.Time
+		)
 
-		// If credentials are already expired, this is an error
-		if timeUntilExpiry <= 0 {
-			util.SendErrorToChannel(r.ch, errors.NewWithDetails("received already expired token", "expiresAt", token.Expiry))
+		if !token.Expiry.IsZero() {
+			refreshBuffer := util.CalculateRefreshBuffer(timeUntilExpiry)
+			refreshTime := timeUntilExpiry - refreshBuffer
 
-			return
+			logr.FromContextOrDiscard(ctx).V(1).Info("scheduling token refresh", "refreshIn", refreshTime, "refreshBuffer", refreshBuffer, "expiresAt", token.Expiry)
+
+			timer = time.NewTimer(refreshTime)
+			timerCh = timer.C
 		}
-
-		refreshBuffer := util.CalculateRefreshBuffer(timeUntilExpiry)
-		refreshTime := timeUntilExpiry - refreshBuffer
-
-		logr.FromContextOrDiscard(ctx).V(1).Info("scheduling token refresh", "refreshIn", refreshTime, "refreshBuffer", refreshBuffer, "expiresAt", token.Expiry)
-
-		t := time.NewTimer(refreshTime)
 
 		select {
 		case <-ctx.Done():
@@ -313,8 +323,11 @@ func (r *tokenRetriever) tokenRefresherLoop(ctx context.Context) {
 			return
 		case <-r.refreshCh:
 			logr.FromContextOrDiscard(ctx).V(1).Info("refresh triggered")
-			t.Stop()
-		case <-t.C:
+
+			if timer != nil {
+				timer.Stop()
+			}
+		case <-timerCh:
 			// Continue to next iteration to refresh
 			logr.FromContextOrDiscard(ctx).V(1).Info("refreshing token")
 		}

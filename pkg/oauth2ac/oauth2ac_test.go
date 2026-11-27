@@ -127,6 +127,39 @@ func TestRefresherDoesNotSpin(t *testing.T) {
 	})
 }
 
+// A refresh answered with an expiry in the past gives subscribers an error,
+// not the expired token.
+func TestRefresherDoesNotPublishExpiredToken(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"access_token":"at","refresh_token":"rt","token_type":"Bearer","expires_in":-5}`) //nolint:errcheck
+	}))
+	t.Cleanup(srv.Close)
+
+	store := &memStore{tok: &oauth2.Token{AccessToken: "at", RefreshToken: "rt", Expiry: time.Now().Add(-time.Minute)}}
+
+	cp := newTestProvider(t, store, srv.URL)
+	cp.syncGate.Open()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+
+	ch, err := cp.GetCredentials(ctx)
+	require.NoError(t, err)
+
+	cp.tokenRefresherLoop(ctx)
+
+	select {
+	case res := <-ch:
+		require.ErrorContains(t, res.Err, "already expired")
+		assert.Nil(t, res.Credential)
+	default:
+		t.Fatal("nothing was published")
+	}
+}
+
 // A token that lives for less than the wait above is still refreshed when it expires.
 func TestRefresherRefreshesShortLivedToken(t *testing.T) {
 	t.Parallel()

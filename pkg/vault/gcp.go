@@ -64,8 +64,8 @@ var gcpTokenHosts = []string{"accounts.google.com"}
 
 // isGCPTokenHost accepts Google's token hosts: any googleapis.com host, which
 // covers regional and Private Service Connect endpoints, and oauth2.<domain>
-// for a key of another universe. That domain comes from the key too, so for
-// such a key the check only keeps the request on an oauth2.* host.
+// for the universe domain the caller allowed. The key names its own universe
+// domain too, but the key is what is being checked.
 func isGCPTokenHost(host, universeDomain string) bool {
 	host = strings.ToLower(host)
 
@@ -77,12 +77,11 @@ func isGCPTokenHost(host, universeDomain string) bool {
 }
 
 // checkGCPTokenURI rejects a service account key whose token_uri is not one
-// of Google's. The key comes from the Vault secret, and the signed assertion
-// is sent to that URI.
-func checkGCPTokenURI(keyJSON []byte) error {
+// of Google's, or of the universe domain the caller allowed. The key comes
+// from the Vault secret, and the signed assertion is sent to that URI.
+func checkGCPTokenURI(keyJSON []byte, universeDomain string) error {
 	var key struct {
-		TokenURI       string `json:"token_uri"`
-		UniverseDomain string `json:"universe_domain"`
+		TokenURI string `json:"token_uri"`
 	}
 
 	if err := json.Unmarshal(keyJSON, &key); err != nil {
@@ -94,7 +93,7 @@ func checkGCPTokenURI(keyJSON []byte) error {
 	}
 
 	u, err := url.Parse(key.TokenURI)
-	if err != nil || u.Scheme != "https" || (u.Port() != "" && u.Port() != "443") || !isGCPTokenHost(u.Hostname(), key.UniverseDomain) {
+	if err != nil || u.Scheme != "https" || (u.Port() != "" && u.Port() != "443") || !isGCPTokenHost(u.Hostname(), universeDomain) {
 		return errors.NewWithDetails("token_uri of the service account key is not a Google token endpoint", "token_uri", httpx.RedactURL(key.TokenURI))
 	}
 

@@ -126,6 +126,18 @@ func WithGCPServiceAccountKeyExchangeScopes(scopes []string) option.Option {
 	})
 }
 
+// WithGCPUniverseDomain allows service account keys of another Google Cloud universe, whose token endpoint is https://oauth2.<domain>/.
+// Without it only Google's own token endpoints are accepted, whatever universe a key names.
+// This option is only applicable if WithGCPServiceAccountKeyExchange is enabled.
+func WithGCPUniverseDomain(domain string) option.Option {
+	return withCredentialsOption(func(c *credentialsConfig) {
+		if c.gcp == nil {
+			c.gcp = &gcpCredentialConfig{}
+		}
+		c.gcp.universeDomain = domain
+	})
+}
+
 // WithAzureClientSecretExchange configures the credential exchange to handle Azure credentials returned by Vault's Azure secrets engine.
 // This option is only applicable if the Vault secret being retrieved contains Azure credential data (client ID, client secret).
 func WithAzureClientSecretExchange() option.Option {

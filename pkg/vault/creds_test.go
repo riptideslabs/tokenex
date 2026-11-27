@@ -346,6 +346,7 @@ func TestCheckGCPTokenURI(t *testing.T) {
 		{"https://oauth2-myendpoint.p.googleapis.com/token", "", true},
 		{"https://oauth2.example-universe.goog/token", "example-universe.goog", true},
 		{"https://oauth2.example-universe.goog/token", "", false},
+		{"https://oauth2.other-universe.goog/token", "example-universe.goog", false},
 		{"https://iam.example-universe.goog/token", "example-universe.goog", false},
 		{"http://oauth2.googleapis.com/token", "", false},
 		{"https://oauth2.googleapis.com:8443/token", "", false},
@@ -354,10 +355,11 @@ func TestCheckGCPTokenURI(t *testing.T) {
 		{"https://example.com/oauth2.googleapis.com", "", false},
 		{"https://notgoogleapis.com/token", "", false},
 	} {
-		keyJSON, err := json.Marshal(map[string]string{"token_uri": tc.tokenURI, "universe_domain": tc.universe})
+		// The universe domain a key names for itself allows nothing.
+		keyJSON, err := json.Marshal(map[string]string{"token_uri": tc.tokenURI, "universe_domain": "example-universe.goog"})
 		require.NoError(t, err)
 
-		err = checkGCPTokenURI(keyJSON)
+		err = checkGCPTokenURI(keyJSON, tc.universe)
 		if tc.ok {
 			require.NoError(t, err, tc.tokenURI)
 		} else {

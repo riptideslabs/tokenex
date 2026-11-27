@@ -48,6 +48,9 @@ type gcpCredentialConfig struct {
 	// This option is used only when exchangeSAKeyForAccessToken is true.
 	// If not set, it defaults to ["https://www.googleapis.com/auth/cloud-platform"].
 	accessTokenScopes []string
+
+	// universeDomain allows the token endpoint of another Google Cloud universe, oauth2.<universeDomain>.
+	universeDomain string
 }
 
 func (g *gcpCredentialConfig) ExchangeSAKeyForAccessToken() bool {
@@ -346,7 +349,7 @@ func fetchCredentials(ctx context.Context, tracer trace.Tracer, configAttrs []at
 }
 
 // startGcpAccessTokenProvider starts a worker goroutine that exchanges a GCP service account key for an access token and refreshes it as needed until the context is canceled.
-func (cp *credentialsProvider) startGcpAccessTokenProvider(ctx context.Context, tracer trace.Tracer, parentSpanContext trace.SpanContext, secretData map[string]any, scopes []string) (<-chan credential.Result, error) {
+func (cp *credentialsProvider) startGcpAccessTokenProvider(ctx context.Context, tracer trace.Tracer, parentSpanContext trace.SpanContext, secretData map[string]any, gcp *gcpCredentialConfig) (<-chan credential.Result, error) {
 	var serviceAccountKeySecret gcpServiceAccountKeySecret
 	if err := mapstructure.Decode(secretData, &serviceAccountKeySecret); err != nil {
 		return nil, errors.WrapIf(err, "failed to decode Vault secret data into GCP service account key credentials structure")
@@ -357,10 +360,11 @@ func (cp *credentialsProvider) startGcpAccessTokenProvider(ctx context.Context, 
 		return nil, errors.WrapIf(err, "failed to get service account key JSON")
 	}
 
-	if err := checkGCPTokenURI(keyJSON); err != nil {
+	if err := checkGCPTokenURI(keyJSON, gcp.universeDomain); err != nil {
 		return nil, err
 	}
 
+	scopes := gcp.accessTokenScopes
 	if len(scopes) == 0 {
 		scopes = []string{"https://www.googleapis.com/auth/cloud-platform"}
 	}
@@ -421,7 +425,7 @@ func (cp *credentialsProvider) startWorker(ctx context.Context, tracer trace.Tra
 		// get access token using the service account key data in the Vault secret
 		// and send the access token through the channel instead of the raw service account key data
 		ctx, cancel := context.WithCancel(ctx)
-		credsChan, err := cp.startGcpAccessTokenProvider(ctx, tracer, parentSpanContext, credsData, cfg.gcp.accessTokenScopes)
+		credsChan, err := cp.startGcpAccessTokenProvider(ctx, tracer, parentSpanContext, credsData, cfg.gcp)
 		if err != nil {
 			return nil, cancel, errors.WrapIf(err, "failed to start GCP access token provider")
 		}

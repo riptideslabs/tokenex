@@ -642,10 +642,10 @@ func (cp *credentialsProvider) tokenRefresherLoop(ctx context.Context) {
 			cp.logger.Info("scheduling credential refresh", "refreshIn", refreshTime, "refreshBuffer", refreshBuffer, "expiresAt", accessToken.Expiry)
 		}
 
-		// An already expired token is reported, not handed out.
+		// An already expired token is reported like a failed refresh, not handed out.
 		if expired {
 			cp.publishCredential(Credential{
-				Event: credential.UpdateEventType,
+				Event: credential.RemoveEventType,
 				Err:   errors.NewWithDetails("received already expired token", "expiresAt", accessToken.Expiry),
 			})
 		} else {

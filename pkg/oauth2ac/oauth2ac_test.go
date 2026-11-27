@@ -155,6 +155,7 @@ func TestRefresherDoesNotPublishExpiredToken(t *testing.T) {
 	case res := <-ch:
 		require.ErrorContains(t, res.Err, "already expired")
 		assert.Nil(t, res.Credential)
+		assert.Equal(t, credential.RemoveEventType, res.Event)
 	default:
 		t.Fatal("nothing was published")
 	}

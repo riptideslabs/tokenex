@@ -48,9 +48,9 @@ func (s *memStore) Delete(context.Context, string) error {
 	return nil
 }
 
-// runRefresher runs the refresh loop of an authorized provider for a moment and
+// runRefresher runs the refresh loop of an authorized provider for a while and
 // returns how often it read the token store and called the token endpoint.
-func runRefresher(t *testing.T, stored *oauth2.Token, tokenResponse string) (int, int64) {
+func runRefresher(t *testing.T, runFor time.Duration, stored *oauth2.Token, tokenResponse string) (int, int64) {
 	t.Helper()
 
 	var requests atomic.Int64
@@ -76,7 +76,7 @@ func runRefresher(t *testing.T, stored *oauth2.Token, tokenResponse string) (int
 	cp.clientSecret = "secret"
 	cp.syncGate.Open()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), runFor)
 	defer cancel()
 
 	cp.tokenRefresherLoop(ctx)
@@ -93,7 +93,7 @@ func TestRefresherDoesNotSpin(t *testing.T) {
 	t.Run("token without an expiry", func(t *testing.T) {
 		t.Parallel()
 
-		gets, requests := runRefresher(t, &oauth2.Token{AccessToken: "at", RefreshToken: "rt"}, "")
+		gets, requests := runRefresher(t, 300*time.Millisecond, &oauth2.Token{AccessToken: "at", RefreshToken: "rt"}, "")
 		assert.Equal(t, 1, gets)
 		assert.Zero(t, requests)
 	})
@@ -103,7 +103,17 @@ func TestRefresherDoesNotSpin(t *testing.T) {
 
 		expired := &oauth2.Token{AccessToken: "at", RefreshToken: "rt", Expiry: time.Now().Add(-time.Minute)}
 
-		_, requests := runRefresher(t, expired, `{"access_token":"at","refresh_token":"rt","token_type":"Bearer","expires_in":-5}`)
+		_, requests := runRefresher(t, 300*time.Millisecond, expired, `{"access_token":"at","refresh_token":"rt","token_type":"Bearer","expires_in":-5}`)
 		assert.EqualValues(t, 1, requests)
 	})
+}
+
+// A token that lives for less than the wait above is still refreshed when it expires.
+func TestRefresherRefreshesShortLivedToken(t *testing.T) {
+	t.Parallel()
+
+	expired := &oauth2.Token{AccessToken: "at", RefreshToken: "rt", Expiry: time.Now().Add(-time.Minute)}
+
+	_, requests := runRefresher(t, 1800*time.Millisecond, expired, `{"access_token":"at","refresh_token":"rt","token_type":"Bearer","expires_in":1}`)
+	assert.GreaterOrEqual(t, requests, int64(2))
 }

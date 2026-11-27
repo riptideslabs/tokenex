@@ -40,7 +40,7 @@ var (
 	ErrInvalidToken         = errors.NewPlain("token is not valid")
 )
 
-// minRefreshInterval is the shortest wait between two timed refreshes.
+// minRefreshInterval is the wait before refreshing a token that is already expired.
 const minRefreshInterval = 10 * time.Second
 
 type (
@@ -634,8 +634,12 @@ func (cp *credentialsProvider) tokenRefresherLoop(ctx context.Context) {
 		if !accessToken.Expiry.IsZero() {
 			timeUntilExpiry := time.Until(accessToken.Expiry)
 			refreshBuffer := util.CalculateRefreshBuffer(timeUntilExpiry)
+			refreshTime = timeUntilExpiry - refreshBuffer
 			// An expiry in the past must not turn the loop into a busy one.
-			refreshTime = max(timeUntilExpiry-refreshBuffer, minRefreshInterval)
+			if refreshTime <= 0 {
+				refreshTime = minRefreshInterval
+			}
+
 			refreshTimer = time.After(refreshTime)
 
 			cp.logger.Info("scheduling credential refresh", "refreshIn", refreshTime, "refreshBuffer", refreshBuffer, "expiresAt", accessToken.Expiry)

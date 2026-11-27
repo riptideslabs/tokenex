@@ -16,7 +16,6 @@ import (
 
 	"emperror.dev/errors"
 	"github.com/go-logr/logr"
-	"github.com/werbenhu/eventbus"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2"
 	corev1 "k8s.io/api/core/v1"
@@ -172,8 +171,8 @@ type credentialsProvider struct {
 
 	syncGate *util.SyncGate
 
-	pipeMu sync.Mutex
-	pipe   *eventbus.Pipe[Credential]
+	subsMu sync.Mutex
+	subs   map[chan Credential]struct{}
 }
 
 // TokenStorage defines the interface for storing and retrieving OAuth2 tokens.
@@ -220,7 +219,7 @@ func NewCredentialsProvider(id string, cache cache.Cache, tokenStore TokenStorag
 		running:    &atomic.Bool{},
 		authStates: map[string]authState{},
 		syncGate:   util.NewSyncGate(),
-		pipe:       eventbus.NewPipe[Credential](),
+		subs:       map[chan Credential]struct{}{},
 
 		authStateTTL:             time.Minute * 5,
 		authStateCleanupInterval: time.Second * 5,
@@ -277,11 +276,10 @@ func (cp *credentialsProvider) Start(ctx context.Context) (<-chan StatusEvent, e
 		cp.tokenRefresherLoop(ctx)
 		cp.logger.V(1).Info("context cancelled, stopping provider")
 
-		// reset pipe
-		cp.pipeMu.Lock()
-		cp.pipe.Close()
-		cp.pipe = eventbus.NewPipe[Credential]()
-		cp.pipeMu.Unlock()
+		// drop the subscribers
+		cp.subsMu.Lock()
+		clear(cp.subs)
+		cp.subsMu.Unlock()
 
 		handlerStopFunc()
 
@@ -367,39 +365,42 @@ func (cp *credentialsProvider) GetCredentials(
 ) (<-chan Credential, error) {
 	credsChan := make(chan Credential, 1)
 
-	fn := func(credential Credential) {
-		util.SendToChannel(credsChan, credential)
-	}
+	cp.subsMu.Lock()
+	defer cp.subsMu.Unlock()
 
-	cp.pipeMu.Lock()
-	defer cp.pipeMu.Unlock()
-	if err := cp.pipe.Subscribe(fn); err != nil {
-		return nil, err
-	}
+	cp.subs[credsChan] = struct{}{}
 
-	// send existing access token to subscriber
+	// send existing access token to subscriber, unless it is expired: the
+	// refresher publishes its replacement
 	token, err := cp.tokenStore.Get(ctx, cp.id)
-	if err == nil {
-		event := cp.createUpdateEventFromToken(token)
-		fn(event)
+	if err == nil && token.Valid() {
+		util.SendToChannel(credsChan, cp.createUpdateEventFromToken(token))
 	}
 
-	go func() {
-		<-ctx.Done()
-		cp.pipeMu.Lock()
-		_ = cp.pipe.Unsubscribe(fn)
-		cp.pipeMu.Unlock()
-	}()
+	context.AfterFunc(ctx, func() {
+		cp.subsMu.Lock()
+		delete(cp.subs, credsChan)
+		cp.subsMu.Unlock()
+	})
 
 	return credsChan, nil
 }
 
+// sendStatusEvent leaves the latest event in statusCh without ever blocking.
 func (cp *credentialsProvider) sendStatusEvent(event StatusEvent) {
-	select {
-	case cp.statusCh <- event:
-	default:
-		<-cp.statusCh
-		cp.statusCh <- event
+	for {
+		select {
+		case cp.statusCh <- event:
+			return
+		default:
+		}
+
+		// Channel is full: discard the old event, unless the consumer took it
+		// in the meantime.
+		select {
+		case <-cp.statusCh:
+		default:
+		}
 	}
 }
 
@@ -419,9 +420,7 @@ func (cp *credentialsProvider) exchangeToken(ctx context.Context, tracer trace.T
 
 	cp.logger.V(2).Info("exchange", "state", authState)
 
-	cp.statesMu.RLock()
-	st, ok := cp.authStates[authState]
-	cp.statesMu.RUnlock()
+	st, ok := cp.takeAuthState(authState)
 	if !ok {
 		err := errors.WithStack(ErrUnknownAuthState)
 		tokenextelemetry.RecordResult(span, err)
@@ -432,10 +431,6 @@ func (cp *credentialsProvider) exchangeToken(ctx context.Context, tracer trace.T
 	if cp.cfg.UsePKCE {
 		opts = append(opts, oauth2.SetAuthURLParam("code_verifier", st.verifier))
 	}
-
-	cp.statesMu.Lock()
-	delete(cp.authStates, authState)
-	cp.statesMu.Unlock()
 
 	for k, vs := range cp.cfg.AdditionalParams {
 		for _, v := range vs {
@@ -682,11 +677,12 @@ func (cp *credentialsProvider) tokenRefresherLoop(ctx context.Context) {
 }
 
 func (cp *credentialsProvider) publishCredential(cred Credential) {
-	cp.pipeMu.Lock()
-	if err := cp.pipe.Publish(cred); err != nil {
-		cp.logger.Error(err, "could not publish credential")
+	cp.subsMu.Lock()
+	defer cp.subsMu.Unlock()
+
+	for ch := range cp.subs {
+		util.SendToChannel(ch, cred)
 	}
-	cp.pipeMu.Unlock()
 }
 
 func (cp *credentialsProvider) createUpdateEventFromToken(token *oauth2.Token) Credential {
@@ -837,6 +833,26 @@ func (cp *credentialsProvider) storeAuthState(authState authState) {
 	defer cp.statesMu.Unlock()
 
 	cp.authStates[authState.state] = authState
+}
+
+// takeAuthState removes a state and returns it if it is known and not older
+// than the TTL, so a state completes at most one authorization.
+func (cp *credentialsProvider) takeAuthState(state string) (authState, bool) {
+	cp.statesMu.Lock()
+	defer cp.statesMu.Unlock()
+
+	st, ok := cp.authStates[state]
+	if !ok {
+		return authState{}, false
+	}
+
+	delete(cp.authStates, state)
+
+	if time.Since(st.issuedAt) > cp.authStateTTL {
+		return authState{}, false
+	}
+
+	return st, true
 }
 
 func (cp *credentialsProvider) cleanupExpiredStates() {

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+
+	"go.riptides.io/tokenex/internal/httpx"
 )
 
 const fetchSpanName = "credential.fetch"
@@ -15,7 +17,7 @@ const instrumentationScopeName = "go.riptides.io/tokenex/pkg/vault"
 
 func fetchSpanConfigAttrs(cfg *credentialsConfig, vaultAddr string, correlationID string) []attribute.KeyValue {
 	return []attribute.KeyValue{
-		attribute.String("cfg.vault_addr", vaultAddr),
+		attribute.String("cfg.vault_addr", httpx.RedactURL(vaultAddr)),
 		attribute.String("cfg.jwt_auth_method_path", cfg.jwtAuthMethodPath),
 		attribute.String("cfg.jwt_auth_role_name", cfg.jwtAuthRoleName),
 		attribute.String("cfg.secret_full_path", cfg.secretFullPath),

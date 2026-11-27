@@ -5,6 +5,8 @@ package conjur
 
 import (
 	"go.opentelemetry.io/otel/attribute"
+
+	"go.riptides.io/tokenex/internal/httpx"
 )
 
 const fetchSpanName = "credential.fetch"
@@ -13,7 +15,7 @@ const instrumentationScopeName = "go.riptides.io/tokenex/pkg/conjur"
 
 func fetchSpanConfigAttrs(cfg *credentialsConfig, applianceURL string, correlationID string) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
-		attribute.String("cfg.appliance_url", applianceURL),
+		attribute.String("cfg.appliance_url", httpx.RedactURL(applianceURL)),
 		attribute.String("cfg.account", cfg.account),
 		attribute.String("cfg.service_id", cfg.serviceID),
 		attribute.StringSlice("cfg.variable_ids", variableIDs(cfg.variables)),

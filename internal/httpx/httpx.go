@@ -7,6 +7,7 @@ package httpx
 import (
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	"emperror.dev/errors"
@@ -87,6 +88,22 @@ func Snippet[T ~string | ~[]byte](body T) string {
 	}
 
 	return string(body[:maxSnippet]) + "... (truncated)"
+}
+
+// RedactURL returns rawURL without its user information, for spans and logs.
+func RedactURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "(invalid URL)"
+	}
+
+	if u.User == nil {
+		return rawURL
+	}
+
+	u.User = nil
+
+	return u.String()
 }
 
 // LimitResponses returns a transport that fails the read of a response body

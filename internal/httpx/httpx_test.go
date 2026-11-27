@@ -65,6 +65,14 @@ func TestSnippet(t *testing.T) {
 	assert.True(t, strings.HasSuffix(got, "(truncated)"))
 }
 
+func TestRedactURL(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "https://idp.example.com/token?a=b", httpx.RedactURL("https://idp.example.com/token?a=b"))
+	assert.Equal(t, "https://idp.example.com/token", httpx.RedactURL("https://user:secret@idp.example.com/token"))
+	assert.NotContains(t, httpx.RedactURL("https://user:secret@idp.example.com:port/token"), "secret")
+}
+
 func TestLimitResponses(t *testing.T) {
 	t.Parallel()
 

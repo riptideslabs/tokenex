@@ -8,6 +8,8 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"golang.org/x/oauth2"
+
+	"go.riptides.io/tokenex/internal/httpx"
 )
 
 const fetchSpanName = "credential.fetch"
@@ -36,7 +38,7 @@ func bodyFormatString(f BodyFormat) string {
 func fetchSpanConfigAttrs(cfg *credentialsConfig, correlationID string) []attribute.KeyValue {
 	attrs := make([]attribute.KeyValue, 0, 4+len(allowedAdditionalFieldKeys))
 	attrs = append(attrs,
-		attribute.String("cfg.token_endpoint_url", cfg.tokenEndpointURL),
+		attribute.String("cfg.token_endpoint_url", httpx.RedactURL(cfg.tokenEndpointURL)),
 		attribute.StringSlice("cfg.scopes", cfg.scopes),
 		attribute.String("cfg.body_format", bodyFormatString(cfg.bodyFormat)),
 		attribute.String("correlation_id", correlationID),

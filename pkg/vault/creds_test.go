@@ -332,23 +332,36 @@ func TestGCPKeyWithForeignTokenURIIsRejected(t *testing.T) {
 func TestCheckGCPTokenURI(t *testing.T) {
 	t.Parallel()
 
-	for tokenURI, ok := range map[string]bool{
-		"":                                    true,
-		"https://oauth2.googleapis.com/token": true,
-		"https://accounts.google.com/o/oauth2/token": true,
-		"http://oauth2.googleapis.com/token":         false,
-		"https://oauth2.googleapis.com.example.com/": false,
-		"https://oauth2.googleapis.com@example.com/": false,
-		"https://example.com/oauth2.googleapis.com":  false,
+	for _, tc := range []struct {
+		tokenURI string
+		universe string
+		ok       bool
+	}{
+		{"", "", true},
+		{"https://oauth2.googleapis.com/token", "", true},
+		{"https://oauth2.googleapis.com:443/token", "", true},
+		{"https://OAuth2.GoogleAPIs.com/token", "", true},
+		{"https://www.googleapis.com/oauth2/v4/token", "googleapis.com", true},
+		{"https://accounts.google.com/o/oauth2/token", "", true},
+		{"https://oauth2-myendpoint.p.googleapis.com/token", "", true},
+		{"https://oauth2.example-universe.goog/token", "example-universe.goog", true},
+		{"https://oauth2.example-universe.goog/token", "", false},
+		{"https://iam.example-universe.goog/token", "example-universe.goog", false},
+		{"http://oauth2.googleapis.com/token", "", false},
+		{"https://oauth2.googleapis.com:8443/token", "", false},
+		{"https://oauth2.googleapis.com.example.com/", "", false},
+		{"https://oauth2.googleapis.com@example.com/", "", false},
+		{"https://example.com/oauth2.googleapis.com", "", false},
+		{"https://notgoogleapis.com/token", "", false},
 	} {
-		keyJSON, err := json.Marshal(map[string]string{"token_uri": tokenURI})
+		keyJSON, err := json.Marshal(map[string]string{"token_uri": tc.tokenURI, "universe_domain": tc.universe})
 		require.NoError(t, err)
 
 		err = checkGCPTokenURI(keyJSON)
-		if ok {
-			require.NoError(t, err, tokenURI)
+		if tc.ok {
+			require.NoError(t, err, tc.tokenURI)
 		} else {
-			require.Error(t, err, tokenURI)
+			require.Error(t, err, tc.tokenURI)
 		}
 	}
 }

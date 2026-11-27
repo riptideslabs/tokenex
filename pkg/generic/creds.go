@@ -194,6 +194,16 @@ loop:
 				return
 			}
 
+			// Calculate when to refresh
+			timeUntilExpiry := time.Until(token.ExpiresAt)
+
+			// If credentials are already expired, this is an error
+			if !token.ExpiresAt.IsZero() && timeUntilExpiry <= 0 {
+				util.SendErrorToChannel(credsChan, errors.NewWithDetails("received already expired credentials", "expiresAt", token.ExpiresAt.Format(time.DateTime)))
+
+				return
+			}
+
 			util.SendToChannel(credsChan, credential.Result{
 				Credential: &credential.Token{
 					Token:     token.Token,
@@ -211,16 +221,6 @@ loop:
 			}
 
 			cp.logger.V(2).Info("credential sent", "expiresAt", token.ExpiresAt.Format(time.DateTime))
-
-			// Calculate when to refresh
-			timeUntilExpiry := time.Until(token.ExpiresAt)
-
-			// If credentials are already expired, this is an error
-			if timeUntilExpiry <= 0 {
-				util.SendErrorToChannel(credsChan, errors.NewWithDetails("received already expired credentials", "expiresAt", token.ExpiresAt.Format(time.DateTime)))
-
-				return
-			}
 
 			refreshBuffer := util.CalculateRefreshBuffer(timeUntilExpiry)
 			refreshTime := timeUntilExpiry - refreshBuffer

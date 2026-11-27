@@ -12,6 +12,7 @@ import (
 	"golang.org/x/oauth2"
 	stsv1 "google.golang.org/api/sts/v1"
 
+	"go.riptides.io/tokenex/internal/expiry"
 	tokenextelemetry "go.riptides.io/tokenex/pkg/telemetry"
 	"go.riptides.io/tokenex/pkg/token"
 	"go.riptides.io/tokenex/pkg/util"
@@ -69,7 +70,7 @@ func (s *stsAccessTokenSource) Token() (*oauth2.Token, error) {
 		AccessToken: resp.AccessToken,
 		TokenType:   "Bearer",
 		ExpiresIn:   resp.ExpiresIn,
-		Expiry:      time.Now().Add(time.Duration(resp.ExpiresIn) * time.Second),
+		Expiry:      expiry.In(resp.ExpiresIn),
 	}
 
 	span.SetAttributes(attribute.String("sts.access_token.expires_at", tok.Expiry.UTC().Format(time.RFC3339)))

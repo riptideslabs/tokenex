@@ -30,6 +30,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2"
 
+	"go.riptides.io/tokenex/internal/expiry"
 	"go.riptides.io/tokenex/internal/httpx"
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
@@ -213,6 +214,14 @@ func (cp *credentialsProvider) refreshCredentialsLoop(
 			return
 		}
 
+		timeUntilExpiry := time.Until(tok.Expiry)
+
+		if !tok.Expiry.IsZero() && timeUntilExpiry <= 0 {
+			util.SendErrorToChannel(credsChan, errors.NewWithDetails("received already expired token", "expiresAt", tok.Expiry))
+
+			return
+		}
+
 		cred := credential.Oauth2Creds(*tok)
 
 		util.SendToChannel(credsChan, Credential{
@@ -225,14 +234,6 @@ func (cp *credentialsProvider) refreshCredentialsLoop(
 		if tok.Expiry.IsZero() {
 			// Token has no expiry — treat as valid until context is cancelled.
 			<-ctx.Done()
-
-			return
-		}
-
-		timeUntilExpiry := time.Until(tok.Expiry)
-
-		if timeUntilExpiry <= 0 {
-			util.SendErrorToChannel(credsChan, errors.NewWithDetails("received already expired token", "expiresAt", tok.Expiry))
 
 			return
 		}
@@ -348,14 +349,9 @@ func exchangeToken(ctx context.Context, client *http.Client, cfg *credentialsCon
 		return nil, errors.New("token endpoint returned empty access_token")
 	}
 
-	tok := &oauth2.Token{
+	return &oauth2.Token{
 		AccessToken: tokenResp.AccessToken,
 		TokenType:   tokenResp.TokenType,
-	}
-
-	if tokenResp.ExpiresIn > 0 {
-		tok.Expiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
-	}
-
-	return tok, nil
+		Expiry:      expiry.FromResponse(tokenResp.ExpiresIn, tokenResp.AccessToken),
+	}, nil
 }

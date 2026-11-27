@@ -131,16 +131,6 @@ func (cp *credentialsProvider) refreshCredentialsLoop(
 			return
 		}
 
-		// Send credentials
-		gcpCredential := credential.Oauth2Creds(*accessToken)
-		util.SendToChannel(credsChan, credential.Result{
-			Credential: &gcpCredential,
-			Err:        nil,
-			Event:      credential.UpdateEventType,
-		})
-
-		cp.logger.V(2).Info("Sent credentials", "expires", accessToken.Expiry)
-
 		// Calculate when to refresh
 		timeUntilExpiry := time.Until(accessToken.Expiry)
 
@@ -150,6 +140,16 @@ func (cp *credentialsProvider) refreshCredentialsLoop(
 
 			return
 		}
+
+		// Send credentials
+		gcpCredential := credential.Oauth2Creds(*accessToken)
+		util.SendToChannel(credsChan, credential.Result{
+			Credential: &gcpCredential,
+			Err:        nil,
+			Event:      credential.UpdateEventType,
+		})
+
+		cp.logger.V(2).Info("Sent credentials", "expires", accessToken.Expiry)
 
 		refreshBuffer := util.CalculateRefreshBuffer(timeUntilExpiry)
 		refreshTime := timeUntilExpiry - refreshBuffer

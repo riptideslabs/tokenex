@@ -5,16 +5,19 @@ package rfc8693 //nolint:testpackage // Tests use unexported functions
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/go-logr/logr/funcr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
@@ -455,4 +458,74 @@ func TestFetchSpanConfigAttrs_BodyFormat(t *testing.T) {
 		attrs := fetchSpanConfigAttrs(&credentialsConfig{bodyFormat: format}, "correlation")
 		assert.Contains(t, attrs, attribute.String("cfg.body_format", want))
 	}
+}
+
+// A missing, negative or huge expires_in must not leave a token unrefreshed or wrap around.
+func TestExchangeToken_Expiry(t *testing.T) {
+	t.Parallel()
+
+	enc := base64.RawURLEncoding.EncodeToString
+	exp := time.Now().Add(10 * time.Minute).Truncate(time.Second)
+	jwtToken := enc([]byte(`{"alg":"none"}`)) + "." + enc([]byte(`{"exp":`+strconv.FormatInt(exp.Unix(), 10)+`}`)) + ".sig"
+
+	testCases := map[string]struct {
+		response string
+		check    func(expiry time.Time) bool
+	}{
+		"none, opaque token": {`{"access_token":"opaque"}`, time.Time.IsZero},
+		"none, JWT":          {`{"access_token":"` + jwtToken + `"}`, exp.Equal},
+		"negative":           {`{"access_token":"opaque","expires_in":-5}`, func(expiry time.Time) bool { return !expiry.IsZero() && time.Until(expiry) < 0 }},
+		"overflowing":        {`{"access_token":"opaque","expires_in":9223372037}`, func(expiry time.Time) bool { return time.Until(expiry) > time.Hour }},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+				io.WriteString(w, tc.response) //nolint:errcheck
+			})
+
+			tok, err := exchangeToken(t.Context(), srv.Client(), &credentialsConfig{tokenEndpointURL: srv.URL}, "subject", "")
+			require.NoError(t, err)
+			require.True(t, tc.check(tok.Expiry), "expiry %s", tok.Expiry)
+		})
+	}
+}
+
+func TestFetchSpanConfigAttrs_NoUserInfo(t *testing.T) {
+	t.Parallel()
+
+	for _, attr := range fetchSpanConfigAttrs(&credentialsConfig{tokenEndpointURL: "https://user:secret@idp.example.com/token"}, "id") {
+		require.NotContains(t, attr.Value.String(), "secret")
+	}
+}
+
+func TestGetCredentials_ExpiredTokenIsNotPublished(t *testing.T) {
+	t.Parallel()
+
+	srv := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, `{"access_token":"opaque","expires_in":-5}`) //nolint:errcheck
+	})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	t.Cleanup(cancel)
+
+	// A slow logger gives the reader time to see each result before the next one replaces it.
+	logger := funcr.New(func(string, string) { time.Sleep(20 * time.Millisecond) }, funcr.Options{Verbosity: 2})
+
+	cp, err := NewCredentialsProvider(ctx, logger)
+	require.NoError(t, err)
+
+	ch, err := cp.GetCredentials(ctx, srv.URL, &staticProvider{tok: "subject"})
+	require.NoError(t, err)
+
+	got := make([]credential.Result, 0, 1)
+	for res := range ch {
+		got = append(got, res)
+	}
+
+	require.Len(t, got, 1)
+	require.Error(t, got[0].Err)
+	require.Nil(t, got[0].Credential)
 }

@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/util"
 )
@@ -45,4 +47,19 @@ func TestSendToChannelNeverWaitsForItself(t *testing.T) {
 			}
 		}
 	}
+}
+
+// A short-lived credential is refreshed before it expires, not at the moment it does.
+func TestCalculateRefreshBufferOfShortLifetime(t *testing.T) {
+	t.Parallel()
+
+	for _, lifetime := range []time.Duration{time.Millisecond, time.Second, 30 * time.Second, 2 * time.Minute} {
+		buffer := util.CalculateRefreshBuffer(lifetime)
+		assert.Positive(t, buffer, lifetime)
+		assert.Less(t, buffer, lifetime/2+1, lifetime)
+	}
+
+	assert.GreaterOrEqual(t, util.CalculateRefreshBuffer(3*time.Minute), time.Minute)
+	assert.Zero(t, util.CalculateRefreshBuffer(0))
+	assert.Zero(t, util.CalculateRefreshBuffer(-time.Minute))
 }

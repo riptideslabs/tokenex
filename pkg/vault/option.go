@@ -86,7 +86,7 @@ func WithIdentityTokenProvider(idtp token.IdentityTokenProvider) option.Option {
 }
 
 // WithPollInterval sets the interval at which to poll Vault secrets for updates in case the secret has either no lease or TTL expiration.
-// If not set, the default polling interval is 15 minutes.
+// If not set, the default polling interval is 15 minutes. The shortest accepted interval is one second.
 // This option is useful for secrets that do not have automatic renewal mechanisms such as the secrets stored in Vault's KV secrets engine.
 func WithPollInterval(d time.Duration) option.Option {
 	return withCredentialsOption(func(c *credentialsConfig) {

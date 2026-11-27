@@ -258,7 +258,7 @@ func TestGetCredentials_PollsForRotation(t *testing.T) {
 	srv := httptest.NewServer(fake)
 	t.Cleanup(srv.Close)
 
-	ch := startProvider(t, srv.URL, nil, WithPollInterval(20*time.Millisecond), WithVariables(map[string]string{passwordKey: passwordID}))
+	ch := startProvider(t, srv.URL, nil, WithPollInterval(minPollInterval), WithVariables(map[string]string{passwordKey: passwordID}))
 
 	assert.Equal(t, testPassword, requireSecret(t, receive(t, ch))[passwordKey])
 
@@ -368,6 +368,9 @@ func TestValidateConfig(t *testing.T) {
 		{name: "empty variable ID", mutate: func(c *credentialsConfig) { c.variables = map[string]string{passwordKey: ""} }, wantErr: "ID must not be empty"},
 		{name: "comma in variable ID", mutate: func(c *credentialsConfig) { c.variables = map[string]string{passwordKey: "a,b"} }, wantErr: "comma"},
 		{name: "zero poll interval", mutate: func(c *credentialsConfig) { c.pollInterval = 0 }, wantErr: "poll interval"},
+		{name: "short poll interval", mutate: func(c *credentialsConfig) { c.pollInterval = time.Millisecond }, wantErr: "poll interval"},
+		{name: "account is a dot segment", mutate: func(c *credentialsConfig) { c.account = ".." }, wantErr: "must not be . or .."},
+		{name: "service ID is a dot segment", mutate: func(c *credentialsConfig) { c.serviceID = "." }, wantErr: "must not be . or .."},
 		{name: "missing token provider", mutate: func(c *credentialsConfig) { c.identityTokenProvider = nil }, wantErr: "identity token provider"},
 	}
 

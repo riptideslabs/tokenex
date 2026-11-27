@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"go.riptides.io/tokenex/internal/expiry"
 	"go.riptides.io/tokenex/internal/httpx"
 	"go.riptides.io/tokenex/pkg/credential"
 	"go.riptides.io/tokenex/pkg/option"
@@ -28,8 +29,14 @@ import (
 // ErrDataNotFound is returned when secret at a the specified secret path does not exist in Vault.
 var ErrDataNotFound = errors.New("data not found")
 
-// requestTimeout bounds one Vault request, as api.DefaultConfig does.
-const requestTimeout = 60 * time.Second
+const (
+	// requestTimeout bounds one Vault request, as api.DefaultConfig does.
+	requestTimeout = 60 * time.Second
+
+	// minPollInterval keeps a secret from being read, with a new login each
+	// time, in a tight loop.
+	minPollInterval = time.Second
+)
 
 // gcpCredentialConfig holds configuration specific to GCP credentials returned by the Google Cloud secrets engine in Vault.
 type gcpCredentialConfig struct {
@@ -163,6 +170,13 @@ func validateConfig(cfg *credentialsConfig) error {
 		return errors.New("JWT auth method path is required")
 	}
 
+	// The path is joined into the login URL, where a dot segment would leave auth/.
+	for segment := range strings.SplitSeq(cfg.jwtAuthMethodPath, "/") {
+		if segment == "." || segment == ".." {
+			return errors.New("JWT auth method path must not contain . or .. segments")
+		}
+	}
+
 	if cfg.jwtAuthRoleName == "" {
 		return errors.New("JWT Auth role is required")
 	}
@@ -171,8 +185,8 @@ func validateConfig(cfg *credentialsConfig) error {
 		return errors.New("secret path is required")
 	}
 
-	if cfg.pollInterval <= 0 {
-		return errors.New("poll interval must be greater than zero")
+	if cfg.pollInterval < minPollInterval {
+		return errors.NewWithDetails("poll interval is too short", "minimum", minPollInterval)
 	}
 
 	if cfg.identityTokenProvider == nil {
@@ -278,7 +292,7 @@ func (cp *credentialsProvider) retrieveCredentials(ctx context.Context, cfg *cre
 	// If LeaseID is present, this is a dynamic credential (e.g., database, cloud secret).
 	// Set expiration based on the lease duration returned by Vault.
 	if secret.LeaseID != "" {
-		expiresAt = time.Now().Add(time.Duration(secret.LeaseDuration) * time.Second)
+		expiresAt = expiry.In(int64(secret.LeaseDuration))
 
 		return &credentialData{
 			Data:      secret.Data,
@@ -341,6 +355,10 @@ func (cp *credentialsProvider) startGcpAccessTokenProvider(ctx context.Context, 
 	keyJSON, err := serviceAccountKeySecret.ServiceAccountKeyJSON()
 	if err != nil {
 		return nil, errors.WrapIf(err, "failed to get service account key JSON")
+	}
+
+	if err := checkGCPTokenURI(keyJSON); err != nil {
+		return nil, err
 	}
 
 	if len(scopes) == 0 {

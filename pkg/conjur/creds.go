@@ -45,6 +45,10 @@ type CredentialsProvider interface {
 
 var _ CredentialsProvider = &credentialsProvider{}
 
+// minPollInterval keeps the variables from being read, with a new login each
+// time, in a tight loop.
+const minPollInterval = time.Second
+
 type credentialsConfig struct {
 	account               string
 	serviceID             string
@@ -83,6 +87,13 @@ func validateConfig(cfg *credentialsConfig) error {
 		return errors.New("service ID is required")
 	}
 
+	// Each is one segment of the authentication URL, where these would step out of it.
+	for _, segment := range []string{cfg.account, cfg.serviceID} {
+		if segment == "." || segment == ".." {
+			return errors.New("account and service ID must not be . or ..")
+		}
+	}
+
 	if len(cfg.variables) == 0 {
 		return errors.New("at least one variable is required")
 	}
@@ -102,8 +113,8 @@ func validateConfig(cfg *credentialsConfig) error {
 		}
 	}
 
-	if cfg.pollInterval <= 0 {
-		return errors.New("poll interval must be greater than zero")
+	if cfg.pollInterval < minPollInterval {
+		return errors.NewWithDetails("poll interval is too short", "minimum", minPollInterval)
 	}
 
 	if cfg.identityTokenProvider == nil {
